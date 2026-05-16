@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+motor
+pydantic-settings
+solana
+solders
+httpx
+apscheduler
+python-dotenv
+pynacl
+base58
