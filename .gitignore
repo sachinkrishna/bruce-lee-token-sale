@@ -4,6 +4,7 @@ __pycache__/
 # Real secrets live in .env; .env.test holds mock-only test config (committed).
 .env
 .env.bak
+.devnet_keys.json
 *.egg-info/
 dist/
 build/
