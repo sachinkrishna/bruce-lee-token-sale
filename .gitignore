@@ -1,11 +1,13 @@
 venv/
 __pycache__/
 *.pyc
+# Real secrets live in .env; .env.test holds mock-only test config (committed).
 .env
-.env.test
+.env.bak
 *.egg-info/
 dist/
 build/
 .DS_Store
 *.csv
 *_state.json
+/tmp/

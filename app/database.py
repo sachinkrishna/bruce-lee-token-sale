@@ -32,6 +32,12 @@ async def ensure_indexes() -> None:
         unique=True,
     )
     await db.transactions.create_index("purchase_id")
+    await db.global_pools.create_index("pool_index", unique=True)
+    await db.global_pools.create_index([("status", 1), ("end_at", 1)])
+    await db.global_pools.create_index([("start_at", 1), ("end_at", 1)])
+    await db.pool_points.create_index([("pool_id", 1), ("wallet_address", 1)], unique=True)
+    await db.pool_points.create_index([("pool_index", 1), ("points_usd", -1)])
+    await db.pool_points.create_index("wallet_address")
     await db[MONGO_BURN_COLLECTION].create_index("wallet")
     await db[MONGO_BURN_COLLECTION].create_index([("timestamp", -1)])
 
@@ -58,6 +64,14 @@ def relationship_tree_col():
 
 def transactions_col():
     return db.transactions
+
+
+def global_pools_col():
+    return db.global_pools
+
+
+def pool_points_col():
+    return db.pool_points
 
 
 def burns_col():

@@ -4,6 +4,7 @@ from typing import Optional
 
 import httpx
 from solders.hash import Hash
+from solders.instruction import Instruction
 from solders.keypair import Keypair
 from solders.message import Message
 from solders.pubkey import Pubkey
@@ -18,6 +19,12 @@ _http_client: Optional[httpx.AsyncClient] = None
 
 # In-memory balance ledger for test mode (pubkey -> lamports)
 _test_balances: dict = {}
+
+# In-memory memo ledger for test mode: memo -> signature
+_test_memos: dict = {}
+
+# SPL Memo Program v2 (the standard memo program)
+MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -132,6 +139,83 @@ async def transfer_sol(
     signature = result
     logger.info(f"SOL transfer tx: {signature}")
     return signature
+
+
+async def transfer_sol_with_memo(
+    from_keypair: Keypair,
+    to_pubkey: Pubkey,
+    lamports: int,
+    memo: str,
+) -> str:
+    """SOL transfer with an attached SPL memo for on-chain idempotency lookup."""
+    if settings.test_mode:
+        from_pub = str(from_keypair.pubkey())
+        to_pub = str(to_pubkey)
+        current = _test_balances.get(from_pub, 0)
+        _test_balances[from_pub] = max(0, current - lamports - 5000)
+        _test_balances[to_pub] = _test_balances.get(to_pub, 0) + lamports
+        sig = f"test_tx_{uuid.uuid4().hex[:16]}"
+        _test_memos[memo] = sig
+        logger.info(
+            "[TEST] Transfer %s lamports w/ memo %s: %s.. -> %s.. tx=%s",
+            lamports, memo, from_pub[:8], to_pub[:8], sig,
+        )
+        return sig
+
+    blockhash_str = await get_latest_blockhash()
+    blockhash = Hash.from_string(blockhash_str)
+
+    memo_ix = Instruction(
+        program_id=MEMO_PROGRAM_ID,
+        accounts=[],
+        data=memo.encode("utf-8"),
+    )
+    transfer_ix = transfer(
+        TransferParams(
+            from_pubkey=from_keypair.pubkey(),
+            to_pubkey=to_pubkey,
+            lamports=lamports,
+        )
+    )
+    msg = Message.new_with_blockhash([memo_ix, transfer_ix], from_keypair.pubkey(), blockhash)
+    tx = Transaction.new_unsigned(msg)
+    tx.sign([from_keypair], blockhash)
+
+    import base64
+
+    encoded = base64.b64encode(bytes(tx)).decode("utf-8")
+    result = await rpc_request(
+        "sendTransaction",
+        [encoded, {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "confirmed"}],
+    )
+    logger.info("SOL transfer w/ memo tx: %s (memo=%s)", result, memo)
+    return result
+
+
+async def find_signature_by_memo(
+    funding_pubkey: str,
+    memo: str,
+    *,
+    limit: int = 1000,
+) -> Optional[str]:
+    """Scan recent signatures of `funding_pubkey` for one whose memo contains `memo`.
+
+    `getSignaturesForAddress` returns a `memo` field for each entry when memo instructions
+    were present in the tx, so this is a single RPC call per lookup.
+    """
+    if settings.test_mode:
+        return _test_memos.get(memo)
+
+    page_limit = min(limit, 1000)
+    result = await rpc_request(
+        "getSignaturesForAddress",
+        [funding_pubkey, {"limit": page_limit}],
+    )
+    for entry in result or []:
+        entry_memo = entry.get("memo") or ""
+        if memo in entry_memo and entry.get("err") is None:
+            return entry.get("signature")
+    return None
 
 
 async def confirm_transaction(signature: str, max_retries: int = 30) -> bool:

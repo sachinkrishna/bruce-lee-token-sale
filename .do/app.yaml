@@ -1,0 +1,144 @@
+name: bruce-lee-sales
+region: nyc
+
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: sachinkrishna/bruce-lee-token-sale
+      branch: main
+      deploy_on_push: true
+    http_port: 8000
+    instance_size_slug: basic-xs
+    instance_count: 1
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 30
+      failure_threshold: 3
+    envs:
+      # ── Datastore ─────────────────────────────────────────────────────
+      - key: MONGO_URI
+        scope: RUN_TIME
+        type: SECRET
+        value: ""        # mongodb+srv://<user>:<pass>@cluster.xxx.mongodb.net/?retryWrites=true&w=majority
+      - key: MONGO_DB_NAME
+        scope: RUN_TIME
+        value: bruce_lee_sales
+
+      # ── Master + Treasury wallets (private keys are SECRETS) ──────────
+      - key: MASTER_WALLET_ADDRESS
+        scope: RUN_TIME
+        value: DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB
+      - key: MASTER_WALLET_PRIVATE_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+      - key: TREASURY_WALLET_ADDRESS
+        scope: RUN_TIME
+        value: ""        # the wallet that holds the XFEE token supply
+      - key: TREASURY_WALLET_PRIVATE_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+
+      # ── Token + Solana RPC ────────────────────────────────────────────
+      - key: XFEE_TOKEN_MINT
+        scope: RUN_TIME
+        value: ""        # XFEE SPL mint address
+      - key: POOL_ADDRESS
+        scope: RUN_TIME
+        value: ""        # POWER staking pool address
+      - key: QUICKNODE_RPC_URL
+        scope: RUN_TIME
+        type: SECRET
+        value: ""        # https://....quiknode.pro/<token>/
+      - key: SOL_PRICE_API_URL
+        scope: RUN_TIME
+        value: https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd
+      - key: XFEE_TOTAL_SUPPLY
+        scope: RUN_TIME
+        value: "400000"
+
+      # ── Pricing / purchase window ─────────────────────────────────────
+      - key: PURCHASE_WALLET_EXPIRY_MINUTES
+        scope: RUN_TIME
+        value: "15"
+      - key: PURCHASE_MIN_USD
+        scope: RUN_TIME
+        value: "6.00"
+      - key: GAS_BUFFER_USD
+        scope: RUN_TIME
+        value: "5.00"
+      - key: LEAVE_IN_PURCHASE_WALLET_USD
+        scope: RUN_TIME
+        value: "4.50"
+
+      # ── Admin auth ────────────────────────────────────────────────────
+      - key: ADMIN_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: ""        # generate a long random string
+
+      # ── Test mode OFF in production ───────────────────────────────────
+      - key: TEST_MODE
+        scope: RUN_TIME
+        value: "false"
+
+      # ── POWER staking ─────────────────────────────────────────────────
+      - key: POWER_DISTRIBUTION_ENABLED
+        scope: RUN_TIME
+        value: "true"
+      - key: POWER_DELAYED_STAKE_BONUS_MULTIPLIER
+        scope: RUN_TIME
+        value: "1.25"
+
+      # ── Stake repair worker ───────────────────────────────────────────
+      - key: STAKE_REPAIR_INTERVAL_SECONDS
+        scope: RUN_TIME
+        value: "120"
+      - key: STAKE_REPAIR_MIN_AGE_MINUTES
+        scope: RUN_TIME
+        value: "5"
+      - key: STAKE_REPAIR_BATCH_SIZE
+        scope: RUN_TIME
+        value: "100"
+
+      # ── Global pool (direct auto-settle, no on-chain program) ─────────
+      - key: GLOBAL_POOL_ENABLED
+        scope: RUN_TIME
+        value: "true"
+      - key: GLOBAL_POOL_DURATION_DAYS
+        scope: RUN_TIME
+        value: "15"
+      - key: GLOBAL_POOL_FINALIZE_INTERVAL_SECONDS
+        scope: RUN_TIME
+        value: "300"
+      - key: GLOBAL_POOL_FUNDING_WALLET_PRIVATE_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: ""        # base58 secret key of the master/top wallet (DXSEB...)
+      - key: GLOBAL_POOL_FUNDING_BUFFER_SOL
+        scope: RUN_TIME
+        value: "0.05"
+      - key: GLOBAL_POOL_SETTLEMENT_CONCURRENCY
+        scope: RUN_TIME
+        value: "3"
+      - key: GLOBAL_POOL_CONFIRM_RETRIES
+        scope: RUN_TIME
+        value: "30"
+
+      # ── Root-child enforcement ────────────────────────────────────────
+      - key: ROOT_CHILD_WALLET_ADDRESS
+        scope: RUN_TIME
+        value: BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry
+      - key: ROOT_CHILD_LEVEL
+        scope: RUN_TIME
+        value: "14"
+      - key: ROOT_CHILD_MAX_DIRECT_REFERRALS
+        scope: RUN_TIME
+        value: "1"
+      - key: ENFORCE_ROOT_CHILD
+        scope: RUN_TIME
+        value: "true"

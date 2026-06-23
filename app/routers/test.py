@@ -17,6 +17,24 @@ class SimulateDepositRequest(BaseModel):
     sol_amount: float
 
 
+class SetBalanceRequest(BaseModel):
+    pubkey: str
+    sol_amount: float
+
+
+@router.post("/set-balance")
+async def set_balance(req: SetBalanceRequest):
+    """Seed an arbitrary pubkey's mock SOL balance. Only available in TEST_MODE.
+
+    Used by the test suite to fund the global-pool settlement wallet, etc.
+    """
+    if not settings.test_mode:
+        raise HTTPException(status_code=403, detail="Only available in test mode")
+    lamports = int(req.sol_amount * 1e9)
+    test_set_balance(req.pubkey, lamports)
+    return {"success": True, "pubkey": req.pubkey, "lamports": lamports}
+
+
 @router.post("/deposit")
 async def simulate_deposit(req: SimulateDepositRequest):
     """

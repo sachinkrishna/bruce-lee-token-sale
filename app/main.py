@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import close_db, connect_db, ensure_indexes, purchases_col, users_col
+from app.database import close_db, connect_db, ensure_indexes, purchases_col, relationship_tree_col, users_col
 from app.services.solana_rpc import (
     close_http_client,
     get_token_account_balance,
@@ -68,6 +68,9 @@ async def lifespan(app: FastAPI):
             logger.info("Master wallet promoted to level %s", MAX_COMMISSION_LEVEL)
         logger.info(f"Master wallet exists: {settings.master_wallet_address}")
 
+    if settings.root_child_wallet_address:
+        await _ensure_root_child()
+
     await ensure_wallet_pool()
     logger.info("Purchase wallet pool checked")
 
@@ -123,6 +126,17 @@ async def lifespan(app: FastAPI):
     elif not settings.power_distribution_enabled:
         logger.warning("Stake repair worker not started: POWER distribution disabled")
 
+    global_pool_task = None
+    if settings.global_pool_enabled and not settings.test_mode:
+        from app.services.global_pool import global_pool_worker_loop
+
+        global_pool_task = asyncio.create_task(global_pool_worker_loop())
+        logger.info(
+            "Global pool worker started (duration=%s days; interval=%ss)",
+            settings.global_pool_duration_days,
+            settings.global_pool_finalize_interval_seconds,
+        )
+
     yield
 
     if repair_task:
@@ -131,11 +145,73 @@ async def lifespan(app: FastAPI):
             await repair_task
         except asyncio.CancelledError:
             pass
+    if global_pool_task:
+        global_pool_task.cancel()
+        try:
+            await global_pool_task
+        except asyncio.CancelledError:
+            pass
 
     logger.info("Shutting down...")
     await close_http_client()
     await close_db()
     logger.info("Shutdown complete")
+
+
+async def _ensure_root_child():
+    """Ensure the configured single root child exists under the master wallet."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    existing_child = await users_col().find_one({"wallet_address": settings.root_child_wallet_address})
+    base_fields = {
+        "wallet_address": settings.root_child_wallet_address,
+        "referrer_wallet": settings.master_wallet_address,
+        "level": settings.root_child_level,
+        "is_valid_referrer": True,
+        "joined_at": now,
+        "self_purchase": 0.0,
+        "total_sales_usd": 0.0,
+        "total_commission_sol": 0.0,
+        "self_purchase_tokens": 0,
+        "total_tokens_sold": 0,
+        "level_sales": {},
+        "level_commission": {},
+        "direct_sales_sol": 0.0,
+        "indirect_sales_sol": 0.0,
+        "direct_commission_sol": 0.0,
+        "indirect_commission_sol": 0.0,
+        "direct_referral_count": 0,
+        "network_size": 0,
+    }
+    if not existing_child:
+        await users_col().insert_one(base_fields)
+        logger.info("Configured root child created: %s", settings.root_child_wallet_address)
+    else:
+        await users_col().update_one(
+            {"wallet_address": settings.root_child_wallet_address},
+            {
+                "$set": {
+                    "referrer_wallet": settings.master_wallet_address,
+                    "level": settings.root_child_level,
+                    "is_valid_referrer": True,
+                }
+            },
+        )
+        logger.info("Configured root child ensured: %s", settings.root_child_wallet_address)
+
+    await relationship_tree_col().update_one(
+        {"wallet_address": settings.root_child_wallet_address},
+        {
+            "$set": {
+                "wallet_address": settings.root_child_wallet_address,
+                "referrer_wallet": settings.master_wallet_address,
+                "ancestors": [settings.master_wallet_address],
+                "depth": 1,
+            }
+        },
+        upsert=True,
+    )
 
 
 async def _recover_pending_purchases():
@@ -215,14 +291,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import admin, burns, purchases, stats, users
+from app.routers import admin, burns, global_pool, purchases, stats, users
 
 app.include_router(users.router)
 app.include_router(purchases.router)
 app.include_router(stats.router)
+app.include_router(global_pool.router)
 app.include_router(burns.router)
 app.include_router(admin.router)
 app.include_router(admin.public_admin_router)
+app.include_router(global_pool.admin_router)
 
 if settings.test_mode:
     from app.routers import test

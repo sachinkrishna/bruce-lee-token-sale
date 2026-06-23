@@ -48,6 +48,29 @@ async def register_user(req: UserRegisterRequest):
         raise HTTPException(status_code=409, detail="Wallet already registered")
 
     is_master = req.referrer_wallet == settings.master_wallet_address
+    is_root_child_referrer = (
+        bool(settings.root_child_wallet_address)
+        and req.referrer_wallet == settings.root_child_wallet_address
+    )
+    if settings.enforce_root_child and settings.root_child_wallet_address:
+        if is_master and req.wallet_address != settings.root_child_wallet_address:
+            raise HTTPException(
+                status_code=400,
+                detail="Master wallet can only refer the configured root child wallet",
+            )
+        if is_root_child_referrer:
+            direct_count = await relationship_tree_col().count_documents(
+                {"referrer_wallet": settings.root_child_wallet_address}
+            )
+            if direct_count >= settings.root_child_max_direct_referrals:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Configured root child wallet has reached its direct referral limit "
+                        f"({settings.root_child_max_direct_referrals})"
+                    ),
+                )
+
     if not is_master:
         referrer = await users_col().find_one({"wallet_address": req.referrer_wallet})
         if not referrer:

@@ -12,6 +12,13 @@ class Settings(BaseSettings):
 
     master_wallet_address: str = ""
     master_wallet_private_key: str = ""
+    root_child_wallet_address: str = "BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry"
+    root_child_level: int = 14
+    root_child_max_direct_referrals: int = 1
+    # Enforce that master can only refer the root child and the root child has at
+    # most `root_child_max_direct_referrals` direct referrals. When False the master
+    # accepts any direct referral (used for tests; production should leave this True).
+    enforce_root_child: bool = True
 
     treasury_wallet_address: str = ""
     treasury_wallet_private_key: str = ""
@@ -22,7 +29,6 @@ class Settings(BaseSettings):
     quicknode_rpc_url: str = ""
     sol_price_api_url: str = ""
 
-    xfee_price_usd: float = 2.00
     xfee_total_supply: int = 400_000
 
     purchase_wallet_expiry_minutes: int = 15
@@ -42,6 +48,14 @@ class Settings(BaseSettings):
     stake_repair_batch_size: int = 100
     # Only repair purchases with confirmed_at >= this instant (UTC); aligns with staking audit default.
     stake_repair_since_unix: int = 1778346247
+
+    global_pool_enabled: bool = True
+    global_pool_duration_days: int = 15
+    global_pool_finalize_interval_seconds: int = 300
+    global_pool_funding_wallet_private_key: str = ""
+    global_pool_funding_buffer_sol: float = 0.05
+    global_pool_settlement_concurrency: int = 3
+    global_pool_confirm_retries: int = 30
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

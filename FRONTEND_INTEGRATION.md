@@ -443,6 +443,206 @@ All errors return:
 
 ---
 
+## Global Pool Points
+
+Global pools run in consecutive 15-day windows from the first completed sale. Points are earned when a user is in the tree but receives a zero commission alloc because a same-level peer already received that level's differential commission in the sale.
+
+**Settlement model:** No on-chain program. When a pool finalizes, the backend transfers each user's owed SOL directly from the configured funding wallet (typically the top/master wallet). Every payout includes an SPL Memo so the backend can reconcile and never double-pay even across restarts.
+
+Pool status transitions:
+
+```
+active -> ready_to_settle -> settling -> settled
+```
+
+Per-user settlement status (`settle_status`):
+
+```
+pending     - point row created, pool not yet settled
+sending     - tx broadcast in progress (transient)
+sent        - tx broadcast successfully, awaiting confirmation
+confirmed   - tx confirmed on-chain
+failed      - last attempt errored; will be retried by worker / admin retry
+skipped_zero - owed lamports rounded to 0
+```
+
+All pool data is fully queryable for the current and previous pools.
+
+### `GET /api/v1/global-pool/summary`
+
+System-wide stats across all pools.
+
+```json
+{
+  "total_pools": 4,
+  "active": 1,
+  "in_progress": 0,
+  "settled": 3,
+  "total_points_usd_all_pools": 12500.45,
+  "settlement_counts": {
+    "pending":   { "total_owed_lamports": 0, "count": 0 },
+    "confirmed": { "total_owed_lamports": 9800000000, "count": 128 },
+    "failed":    { "total_owed_lamports": 0, "count": 0 }
+  },
+  "current_pool_index": 4
+}
+```
+
+### `GET /api/v1/global-pool/`
+
+List all pools (paginated, newest first).
+
+Query params:
+- `status` (optional): `active` | `ready_to_settle` | `settling` | `settled`
+- `page` (default 1)
+- `limit` (default 20, max 200)
+
+Response:
+
+```json
+{
+  "items": [
+    {
+      "_id": "...",
+      "pool_index": 4,
+      "status": "active",
+      "start_at": "2026-06-08T00:00:00+00:00",
+      "end_at": "2026-06-23T00:00:00+00:00",
+      "total_points_usd": 320.5,
+      "user_count": 12,
+      "onchain": null
+    }
+  ],
+  "total": 4,
+  "page": 1,
+  "limit": 20
+}
+```
+
+### `GET /api/v1/global-pool/current`
+
+Returns the active pool, live standings (paginated), and total user count.
+
+Query params: `page` (default 1), `limit` (default 50, max 500).
+
+Response:
+
+```json
+{
+  "active": true,
+  "pool": { "pool_index": 4, "status": "active", "total_points_usd": 320.5, "start_at": "...", "end_at": "..." },
+  "standings": [
+    {
+      "id": "...",
+      "pool_index": 4,
+      "wallet_address": "...",
+      "points_usd": 120.0,
+      "event_count": 3,
+      "settle_status": "pending"
+    }
+  ],
+  "total_users": 12,
+  "page": 1,
+  "limit": 50
+}
+```
+
+### `GET /api/v1/global-pool/{pool_index}`
+
+Same shape as `/current` but for any past or current pool. Once settled, `pool.snapshot` includes `funding_balance_lamports`, `distributable_lamports`, `funding_wallet`, `settlement_id`, and `total_users`; `pool.settlement` includes `started_at`, `completed_at`, and lock metadata.
+
+Query params: `page`, `limit` (default 100, max 1000).
+
+### `GET /api/v1/global-pool/{pool_index}/user/{wallet_address}`
+
+A user's full standing in a single pool, including final settlement status once paid out.
+
+Response when the user participated:
+
+```json
+{
+  "pool": { "pool_index": 3, "status": "settled", "snapshot": { "distributable_lamports": 99000000000, "funding_wallet": "..." } },
+  "wallet_address": "...",
+  "in_pool": true,
+  "entry": {
+    "id": "...",
+    "pool_index": 3,
+    "wallet_address": "...",
+    "points_usd": 45.5,
+    "event_count": 2,
+    "owed_lamports": 1450000,
+    "owed_sol": 0.00145,
+    "settle_status": "confirmed",
+    "tx_signature": "5xHFa...",
+    "memo": "GP:3:a1b2c3d4e5f6:abcdef12",
+    "sent_at": "2026-06-23T01:02:03+00:00",
+    "confirmed_at": "2026-06-23T01:02:08+00:00",
+    "attempts": 1
+  }
+}
+```
+
+When the user wasn't in that pool: `in_pool: false`, `entry: null`.
+
+### `GET /api/v1/global-pool/user/{wallet_address}/points`
+
+The user's full history across all pools (paginated). Use this for the user's pool history page.
+
+Query params: `page` (default 1), `limit` (default 20, max 200).
+
+Response:
+
+```json
+{
+  "wallet_address": "...",
+  "items": [
+    {
+      "pool_index": 3,
+      "points_usd": 45.5,
+      "owed_lamports": 1450000,
+      "owed_sol": 0.00145,
+      "settle_status": "confirmed",
+      "tx_signature": "5xHFa...",
+      "memo": "GP:3:a1b2c3d4e5f6:abcdef12"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "limit": 20
+}
+```
+
+### `settle_status` values
+
+- `pending` - settlement snapshot taken, payout not yet attempted
+- `sending` - tx broadcast in progress (transient state, normally short-lived)
+- `sent` - tx broadcast successful, awaiting on-chain confirmation
+- `confirmed` - tx confirmed on-chain
+- `failed` - last attempt errored (RPC, balance, etc.); worker will retry
+- `skipped_zero` - computed owed lamports rounded to zero
+
+### Admin Settle
+
+`POST /api/v1/admin/global-pool/{pool_index}/settle?force=false`
+
+The background worker settles ended pools automatically. Admin can call this endpoint to retry/resume a failed settlement or force-settle the active pool early with `force=true`. Idempotent — safe to call multiple times; on-chain memo lookups prevent double-payout.
+
+`POST /api/v1/admin/global-pool/process-due`
+
+Manually trigger the worker scan for all pools whose window has ended.
+
+### Idempotency / double-spend guarantees
+
+Each payout transaction includes an SPL Memo of the form `GP:{pool_index}:{settlement_id}:{wallet_prefix}`. Before sending, the backend:
+
+1. Checks the DB row's `settle_status`; skips if already `confirmed`.
+2. Confirms any persisted `tx_signature` first.
+3. Scans recent funding-wallet signatures for the unique memo; if found, marks as `confirmed` without re-sending.
+
+This makes settlement safe to restart after crashes or worker interruptions.
+
+---
+
 ## Solscan Links
 
 For any transaction signature returned by the API:

@@ -15,6 +15,7 @@ from app.database import (
     users_col,
 )
 from app.services.commission import TOTAL_COMMISSION_RATE, distribute_commissions
+from app.services.global_pool import resolve_active_pool
 from app.services.indexer import run_dir_indir_index_batch, run_indexer_batch, run_level_index_batch, run_self_purchase_index
 from app.services.sol_price import get_sol_price
 from app.services.solana_rpc import get_balance_stable, transfer_sol, confirm_transaction
@@ -64,6 +65,8 @@ async def process_completed_purchase(
         },
     )
     logger.info(f"Purchase {purchase_id} confirmed: {balance_sol:.6f} SOL at ${sol_price}")
+    if settings.global_pool_enabled:
+        await resolve_active_pool(datetime.now(timezone.utc))
 
     buyer_wallet = purchase["user_wallet"]
     purchase_wallet_pubkey = purchase["purchase_wallet_pubkey"]
@@ -88,6 +91,22 @@ async def process_completed_purchase(
     
     if skip_token_dispatch:
         logger.info(f"POWER staking skipped for purchase {purchase_id}: skip_token_dispatch=True")
+    elif settings.test_mode:
+        fake_tx = f"test_stake_{pid}"
+        logger.info(f"[TEST] Skipping real stake for purchase {purchase_id}; using fake tx {fake_tx}")
+        await purchases_col().update_one(
+            {"_id": pid},
+            {
+                "$set": {
+                    "token_dispatch_tx": fake_tx,
+                    "power_distribution_status": "staked",
+                    "power_distribution_bonus_eligible": False,
+                    "power_base_amount": power_amount,
+                    "power_amount_staked": power_amount,
+                    "power_staked_at": datetime.now(timezone.utc),
+                }
+            },
+        )
     elif not settings.power_distribution_enabled:
         logger.warning(f"POWER staking disabled by config for purchase {purchase_id}; purchase flow will continue")
         await purchases_col().update_one(
@@ -198,6 +217,7 @@ async def process_completed_purchase(
                 sale_usd,
                 xfee_amount,
                 purchase_value_sol,
+                sol_price,
             )
 
             await purchases_col().update_one(
