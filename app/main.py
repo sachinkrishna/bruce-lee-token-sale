@@ -102,8 +102,11 @@ async def lifespan(app: FastAPI):
         tokens_sold = 0
         async for doc in purchases_col().aggregate(pipeline):
             tokens_sold = doc.get("total", 0)
-        remaining = max(0, settings.xfee_total_supply - tokens_sold)
-        logger.info(f"Global stats: {tokens_sold} XFEE sold, {remaining} remaining (cap-clamped)")
+        if settings.xfee_total_supply <= 0:
+            logger.info(f"Global stats: {tokens_sold} XFEE sold (unlimited supply)")
+        else:
+            remaining = max(0, settings.xfee_total_supply - tokens_sold)
+            logger.info(f"Global stats: {tokens_sold} XFEE sold, {remaining} remaining (cap-clamped)")
     except Exception:
         logger.warning("Could not load global stats")
 

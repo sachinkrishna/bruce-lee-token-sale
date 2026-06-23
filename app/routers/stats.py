@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter
 
 from app.config import settings
@@ -39,8 +41,15 @@ async def global_stats():
         tokens_sold = doc.get("tokens_sold", 0)
         total_purchases = doc.get("total_purchases", 0)
 
-    # Cap at 0: sales are not blocked at initiate; over-cap shows as 0 remaining
-    tokens_remaining = max(0, settings.xfee_total_supply - tokens_sold)
+    # When xfee_total_supply <= 0, treat the sale as uncapped (unlimited).
+    tokens_remaining: Optional[int]
+    total_supply: Optional[int]
+    if settings.xfee_total_supply <= 0:
+        tokens_remaining = None
+        total_supply = None
+    else:
+        tokens_remaining = max(0, settings.xfee_total_supply - tokens_sold)
+        total_supply = settings.xfee_total_supply
 
     try:
         sol_price = await get_sol_price()
@@ -50,6 +59,7 @@ async def global_stats():
     return {
         "tokens_sold": tokens_sold,
         "tokens_remaining": tokens_remaining,
+        "total_supply": total_supply,
         "total_purchases": total_purchases,
         "sol_price": sol_price,
     }
