@@ -207,7 +207,7 @@ async def process_completed_purchase(
     commissionable_sol = purchase_value_sol - (deduction_usd / sol_price)
 
     # 3 & 4. Distribute commissions (creates allocs for ALL ancestors)
-    if sale_usd >= 10.0:
+    if sale_usd >= 1.0:
         try:
             total_distributed = await distribute_commissions(
                 pid,
