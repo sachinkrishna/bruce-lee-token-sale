@@ -21,6 +21,8 @@ async def close_db() -> None:
 async def ensure_indexes() -> None:
     await db.users.create_index("wallet_address", unique=True)
     await db.relationship_tree.create_index("wallet_address", unique=True)
+    await db.relationship_tree.create_index("referrer_wallet")
+    await db.relationship_tree.create_index("ancestors")
     await db.purchase_wallets.create_index("status")
     await db.purchases.create_index("status")
     await db.purchases.create_index("user_wallet")

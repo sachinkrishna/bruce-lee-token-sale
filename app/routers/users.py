@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
@@ -208,7 +209,11 @@ async def get_user_tree(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    tree, truncated = await _build_tree(wallet_address, user.get("level", 1), max_depth=max_depth)
+    tree, truncated = await _build_tree(
+        wallet_address,
+        user.get("level", 1),
+        max_depth=max_depth,
+    )
     if truncated:
         tree["truncated"] = True
         tree["max_depth"] = max_depth
@@ -216,34 +221,68 @@ async def get_user_tree(
 
 
 async def _build_tree(
-    wallet: str,
-    level: int,
+    root_wallet: str,
+    root_level: int,
     max_depth: int,
-    current_depth: int = 0,
 ) -> tuple[dict, bool]:
-    """Recursive subtree builder. Returns (node, truncated_anywhere)."""
-    node = {"wallet": wallet, "level": level, "children": []}
+    """Build the full subtree under `root_wallet` using batched lookups.
 
-    if current_depth >= max_depth:
-        has_children = await relationship_tree_col().count_documents(
-            {"referrer_wallet": wallet}, limit=1
-        )
-        return node, bool(has_children)
+    Three Mongo round-trips regardless of tree size:
+      1. `relationship_tree` to fetch every descendant whose `ancestors`
+         contains `root_wallet`, restricted to global depths in
+         `(root_depth, root_depth + max_depth]`.
+      2. `relationship_tree` count probe to detect any deeper descendant
+         beyond `max_depth` so we can surface a truncation flag.
+      3. `users` to fetch the `level` field for every wallet in the
+         result set in a single $in query.
 
-    truncated = False
-    children_cursor = relationship_tree_col().find({"referrer_wallet": wallet})
-    async for child_tree in children_cursor:
-        child_wallet = child_tree["wallet_address"]
-        child_user = await users_col().find_one({"wallet_address": child_wallet})
-        child_level = child_user.get("level", 1) if child_user else 1
-        child_node, child_truncated = await _build_tree(
-            child_wallet, child_level, max_depth, current_depth + 1
-        )
-        node["children"].append(child_node)
-        if child_truncated:
-            truncated = True
+    The nested structure is then assembled in memory from the parent map.
+    """
+    root_tree = await relationship_tree_col().find_one({"wallet_address": root_wallet})
+    root_depth = int(root_tree.get("depth", 0) or 0) if root_tree else 0
+    max_global_depth = root_depth + max_depth
 
-    return node, truncated
+    descendants: list[dict] = []
+    async for doc in relationship_tree_col().find(
+        {
+            "ancestors": root_wallet,
+            "depth": {"$gt": root_depth, "$lte": max_global_depth},
+        },
+        {"wallet_address": 1, "referrer_wallet": 1, "depth": 1},
+    ):
+        descendants.append(doc)
+
+    deeper_count = await relationship_tree_col().count_documents(
+        {"ancestors": root_wallet, "depth": {"$gt": max_global_depth}},
+        limit=1,
+    )
+    truncated = deeper_count > 0
+
+    wallets = {root_wallet}
+    wallets.update(d["wallet_address"] for d in descendants)
+    levels: dict[str, int] = {root_wallet: int(root_level or 1)}
+    if wallets:
+        async for u in users_col().find(
+            {"wallet_address": {"$in": list(wallets)}},
+            {"wallet_address": 1, "level": 1},
+        ):
+            levels[u["wallet_address"]] = int(u.get("level", 1) or 1)
+
+    children_map: dict[str, list[str]] = defaultdict(list)
+    for d in descendants:
+        parent = d.get("referrer_wallet")
+        child = d.get("wallet_address")
+        if parent and child:
+            children_map[parent].append(child)
+
+    def build_node(wallet: str) -> dict:
+        return {
+            "wallet": wallet,
+            "level": levels.get(wallet, 1),
+            "children": [build_node(c) for c in children_map.get(wallet, [])],
+        }
+
+    return build_node(root_wallet), truncated
 
 
 _DISTRIBUTED_STATUSES = ("staked", "already_staked")
