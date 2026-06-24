@@ -5,7 +5,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.config import settings
-from app.database import allocs_col, global_pools_col, pool_points_col
+from app.database import global_pools_col, pool_points_col
 from app.services.global_pool import (
     get_current_pool,
     get_global_pool_summary,
@@ -16,34 +16,10 @@ from app.services.global_pool import (
     list_pools,
     process_due_pools,
     settle_pool,
+    sum_master_commissions_in_window,
 )
 from app.services.sol_price import get_sol_price
 from app.services.solana_rpc import get_balance
-
-
-async def _sum_master_commissions_in_window(start_at: datetime, end_at: datetime) -> float:
-    """Sum of master's `commission` alloc payouts within a time window.
-
-    This represents funds that legitimately accrued to the funding wallet
-    during the given pool's window, independent of the wallet's gross
-    balance (which may include residuals from prior pools).
-    """
-    if not settings.master_wallet_address:
-        return 0.0
-    pipeline = [
-        {
-            "$match": {
-                "recipient_wallet": settings.master_wallet_address,
-                "alloc_type": "commission",
-                "status": "sent",
-                "created_at": {"$gte": start_at, "$lt": end_at},
-            }
-        },
-        {"$group": {"_id": None, "total_sol": {"$sum": "$sol_amount"}}},
-    ]
-    async for doc in allocs_col().aggregate(pipeline):
-        return float(doc.get("total_sol") or 0.0)
-    return 0.0
 
 
 def _jsonable(value: Any) -> Any:
@@ -144,7 +120,7 @@ async def global_pool_funds():
     start_at = pool["start_at"]
     end_at = pool["end_at"]
     pool_index = int(pool["pool_index"])
-    pool_collected_sol = await _sum_master_commissions_in_window(start_at, end_at)
+    pool_collected_sol = await sum_master_commissions_in_window(start_at, end_at)
     pool_collected_lamports = int(pool_collected_sol * 1e9)
     pool_collected_usd = pool_collected_sol * sol_price
     pool_points_usd = float(pool.get("total_points_usd", 0.0) or 0.0)

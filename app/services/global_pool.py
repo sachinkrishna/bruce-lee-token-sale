@@ -68,6 +68,31 @@ def _memo_for(pool_index: int, settlement_id: str, wallet: str) -> str:
     return f"GP:{pool_index}:{settlement_id}:{wallet[:8]}"
 
 
+async def sum_master_commissions_in_window(start_at: datetime, end_at: datetime) -> float:
+    """Sum master's `sent` commission alloc payouts (SOL) within `[start_at, end_at)`.
+
+    Represents funds that legitimately accrued to the funding wallet during
+    a pool's window — independent of the wallet's gross balance which may
+    include residuals from prior pools or external transfers.
+    """
+    if not settings.master_wallet_address:
+        return 0.0
+    pipeline = [
+        {
+            "$match": {
+                "recipient_wallet": settings.master_wallet_address,
+                "alloc_type": "commission",
+                "status": "sent",
+                "created_at": {"$gte": start_at, "$lt": end_at},
+            }
+        },
+        {"$group": {"_id": None, "total_sol": {"$sum": "$sol_amount"}}},
+    ]
+    async for doc in allocs_col().aggregate(pipeline):
+        return float(doc.get("total_sol") or 0.0)
+    return 0.0
+
+
 # ── Pool lifecycle (window management) ────────────────────────────────────────
 
 async def resolve_active_pool(event_time: datetime) -> Optional[dict]:
@@ -251,6 +276,13 @@ async def list_pools(
     items = [row async for row in cursor]
     for row in items:
         row["user_count"] = await pool_points_col().count_documents({"pool_id": row["_id"]})
+        sol_collected = await sum_master_commissions_in_window(row["start_at"], row["end_at"])
+        row["sol_collected"] = sol_collected
+        row["sol_collected_lamports"] = int(sol_collected * LAMPORTS_PER_SOL)
+        snapshot = row.get("snapshot") or {}
+        if "distributable_lamports" in snapshot:
+            row["distributable_lamports"] = int(snapshot.get("distributable_lamports") or 0)
+            row["distributable_sol"] = row["distributable_lamports"] / LAMPORTS_PER_SOL
     total = await global_pools_col().count_documents(query)
     return {"items": items, "total": total, "page": page, "limit": limit}
 
