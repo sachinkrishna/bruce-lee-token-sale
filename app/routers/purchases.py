@@ -37,8 +37,8 @@ async def estimate_purchase(xfee_amount: int = Query(..., ge=1)):
     sol_price = await get_sol_price()
     # 1 XFEE = 1 USD (or 10 POWER)
     token_cost_usd = float(xfee_amount)
-    
-    if token_cost_usd < 10.0:
+
+    if token_cost_usd < 26.0:
         gas_buffer = 0.20
     else:
         gas_buffer = round(random.uniform(2.0, 4.0), 2)
@@ -82,7 +82,7 @@ async def initiate_purchase(req: PurchaseInitiateRequest):
     token_cost_usd = float(req.xfee_amount)
     purchase_value_sol = token_cost_usd / sol_price
 
-    if token_cost_usd < 10.0:
+    if token_cost_usd < 26.0:
         gas_buffer_usd = 0.20
     else:
         gas_buffer_usd = 2.0
