@@ -33,8 +33,8 @@ These are constants. Hard-code or env-config them on the frontend.
 
 | Name | Value | Purpose |
 |---|---|---|
-| `MASTER_WALLET` | `DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB` | Top of referral tree, level 15 (100% rate). **Cannot be used as a referrer in the registration form** — backend rejects it. |
-| `ROOT_CHILD_WALLET` | `BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry` | Single child of master, level 14 (95% rate). The very first user to register MUST register under this wallet. After that, registrations under it are rejected (limit = 1 direct referral). |
+| `MASTER_WALLET` | `DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB` | Top of referral tree, level 16 (100% rate). **Cannot be used as a referrer in the registration form** — backend rejects it. |
+| `ROOT_CHILD_WALLET` | `BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry` | Single child of master, level 15 (95% rate). The very first user to register MUST register under this wallet. After that, registrations under it are rejected (limit = 1 direct referral). |
 | `XFEE_PRICE_USD` | `1.00` | 1 XFEE always costs $1 USD. Hard-coded. The amount of SOL needed is computed from the live SOL/USD oracle. |
 | `MIN_PURCHASE_XFEE` | `6` | Minimum purchase size (= $6). Smaller amounts are allowed by the API but the gas buffer math is tuned for ≥ $6. |
 | `PURCHASE_TIMEOUT_MINUTES` | `15` | A purchase expires if SOL doesn't arrive in 15 minutes. |
@@ -47,8 +47,8 @@ These are constants. Hard-code or env-config them on the frontend.
 The system enforces a strict referral hierarchy:
 
 ```
-master (L15, 100%)
-  └── root-child (L14, 95%)        [max 1 direct referral]
+master (L16, 100%)
+  └── root-child (L15, 95%)        [max 1 direct referral]
         └── first founder           [the very first real user]
               └── customer 1
               └── customer 2
@@ -75,7 +75,7 @@ if (!referrer) {
 
 ## 5. Commission model — what to display to users
 
-Cumulative-differential commission ladder (15 tiers, all values are commission *rate*):
+Cumulative-differential commission ladder (16 tiers, all values are commission *rate*):
 
 | Level | Rate | Sales volume needed to reach this level (USD) | Notes |
 |---|---|---|---|
@@ -90,12 +90,13 @@ Cumulative-differential commission ladder (15 tiers, all values are commission *
 | 9 | 36% | 1,000,000 | |
 | 10 | 40% | 2,500,000 | |
 | 11 | 45% | 1,000,000,000 | Effectively manual-only |
-| 12 | 60% | 3,000,000,000 | Manual-only |
-| 13 | 75% | 5,000,000,000 | Manual-only |
-| 14 | 95% | 9,000,000,000 | Reserved (root-child) |
-| 15 | 100% | 10,000,000,000 | Reserved (master) |
+| 12 | 50% | 2,000,000,000 | Manual-only |
+| 13 | 60% | 3,000,000,000 | Manual-only |
+| 14 | 75% | 5,000,000,000 | Manual-only |
+| 15 | 95% | 9,000,000,000 | Reserved (root-child) |
+| 16 | 100% | 10,000,000,000 | Reserved (master) |
 
-Levels 1–10 are reachable organically via `total_sales_usd` volume. Levels 11–15 are manual upgrades only — they exist for special operator wallets.
+Levels 1–10 are reachable organically via `total_sales_usd` volume. Levels 11–16 are manual upgrades only — they exist for special operator wallets.
 
 These values are also exposed via `GET /api/v1/stats/levels` so the frontend can fetch them at runtime rather than hard-coding.
 
@@ -103,14 +104,14 @@ These values are also exposed via `GET /api/v1/stats/levels` so the frontend can
 
 For each purchase, the backend walks up the buyer's referrer chain. Each ancestor receives `(their_rate − max_rate_already_paid_below) × sale_amount`.
 
-**Example:** Buyer C (L1, 20%) buys $100. Their chain is B (L1, 20%) → A (L1, 20%) → root-child (L14, 95%) → master (L15, 100%).
+**Example:** Buyer C (L1, 20%) buys $100. Their chain is B (L1, 20%) → A (L1, 20%) → root-child (L15, 95%) → master (L16, 100%).
 
 | Ancestor | Their rate | Max paid below | Receives | USD |
 |---|---|---|---|---|
 | B (L1) | 20% | 0% | 20% | $20.00 |
 | A (L1) | 20% | 20% | **0%** — zero-alloc | $0 → global pool point of $20 |
-| root-child (L14) | 95% | 20% | 75% | $75.00 |
-| master (L15) | 100% | 95% | 5% | $5.00 |
+| root-child (L15) | 95% | 20% | 75% | $75.00 |
+| master (L16) | 100% | 95% | 5% | $5.00 |
 
 So even though A is in C's tree, they receive 0 SOL on this purchase because B already consumed the L1 differential. A is recorded as a "zero-alloc" — they accrue **global pool points** equal to the USD value B received ($20).
 

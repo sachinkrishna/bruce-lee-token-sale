@@ -78,3 +78,7 @@ def pool_points_col():
 
 def burns_col():
     return db[MONGO_BURN_COLLECTION]
+
+
+def system_meta_col():
+    return db.system_meta

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     master_wallet_address: str = ""
     master_wallet_private_key: str = ""
     root_child_wallet_address: str = "BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry"
-    root_child_level: int = 14
+    root_child_level: int = 15
     root_child_max_direct_referrals: int = 1
     # Enforce that master can only refer the root child and the root child has at
     # most `root_child_max_direct_referrals` direct referrals. When False the master

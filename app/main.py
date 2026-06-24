@@ -6,7 +6,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import close_db, connect_db, ensure_indexes, purchases_col, relationship_tree_col, users_col
+from app.database import (
+    close_db,
+    connect_db,
+    ensure_indexes,
+    purchases_col,
+    relationship_tree_col,
+    system_meta_col,
+    users_col,
+)
 from app.services.solana_rpc import (
     close_http_client,
     get_token_account_balance,
@@ -34,8 +42,10 @@ async def lifespan(app: FastAPI):
     await init_http_client()
     logger.info("HTTP client initialized")
 
-    # Ensure master wallet exists in users collection
     from datetime import datetime, timezone
+
+    await _migrate_levels_to_16_tier()
+
     existing = await users_col().find_one({"wallet_address": settings.master_wallet_address})
     if not existing:
         await users_col().insert_one({
@@ -161,16 +171,60 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
+async def _migrate_levels_to_16_tier():
+    """Shift any users from the old 15-tier ranking to the new 16-tier ranking.
+
+    Idempotent. A marker doc in `system_meta` prevents re-application.
+    Shift in descending order so we never double-bump the same record.
+    """
+    from datetime import datetime, timezone
+
+    marker_id = "level_renumber_to_16_tier"
+    marker = await system_meta_col().find_one({"_id": marker_id})
+    if marker and marker.get("applied"):
+        return
+
+    total_shifted = 0
+    for old, new in [(15, 16), (14, 15), (13, 14), (12, 13)]:
+        result = await users_col().update_many(
+            {"level": old},
+            {"$set": {"level": new}},
+        )
+        if result.modified_count:
+            logger.info(
+                "Level migration: shifted %s user(s) from L%s to L%s",
+                result.modified_count, old, new,
+            )
+            total_shifted += result.modified_count
+
+    await system_meta_col().update_one(
+        {"_id": marker_id},
+        {"$set": {"applied": True, "applied_at": datetime.now(timezone.utc), "total_shifted": total_shifted}},
+        upsert=True,
+    )
+    logger.info("Level migration to 16-tier applied (total shifted: %s)", total_shifted)
+
+
 async def _ensure_root_child():
     """Ensure the configured single root child exists under the master wallet."""
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
+    target_level = settings.root_child_level
+    expected_min = MAX_COMMISSION_LEVEL - 1
+    if target_level < expected_min:
+        logger.warning(
+            "ROOT_CHILD_LEVEL=%s is below MAX_COMMISSION_LEVEL-1=%s; clamping to %s. "
+            "Update the env var to silence this warning.",
+            target_level, expected_min, expected_min,
+        )
+        target_level = expected_min
+
     existing_child = await users_col().find_one({"wallet_address": settings.root_child_wallet_address})
     base_fields = {
         "wallet_address": settings.root_child_wallet_address,
         "referrer_wallet": settings.master_wallet_address,
-        "level": settings.root_child_level,
+        "level": target_level,
         "is_valid_referrer": True,
         "joined_at": now,
         "self_purchase": 0.0,
@@ -196,7 +250,7 @@ async def _ensure_root_child():
             {
                 "$set": {
                     "referrer_wallet": settings.master_wallet_address,
-                    "level": settings.root_child_level,
+                    "level": target_level,
                     "is_valid_referrer": True,
                 }
             },

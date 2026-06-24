@@ -142,7 +142,7 @@ services:
         value: BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry
       - key: ROOT_CHILD_LEVEL
         scope: RUN_TIME
-        value: "14"
+        value: "15"
       - key: ROOT_CHILD_MAX_DIRECT_REFERRALS
         scope: RUN_TIME
         value: "1"
