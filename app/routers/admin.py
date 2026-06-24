@@ -7,7 +7,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from solders.pubkey import Pubkey
 
-from app.config import settings
+from app.config import settings, staking_signer_private_key
 from app.database import allocs_col, purchases_col, users_col, relationship_tree_col, transactions_col, purchase_wallets_col
 from app.models.user import SetUserLevelRequest
 from app.services.indexer import reindex_full
@@ -606,8 +606,11 @@ async def admin_stake_purchase(
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
 
-    if not settings.master_wallet_private_key:
-        raise HTTPException(status_code=500, detail="MASTER_WALLET_PRIVATE_KEY not configured")
+    if not staking_signer_private_key():
+        raise HTTPException(
+            status_code=500,
+            detail="POOL_AUTHORITY_PRIVATE_KEY (or fallback MASTER_WALLET_PRIVATE_KEY) not configured",
+        )
 
     pool = pool_address or settings.pool_address
     rpc = rpc_url or settings.quicknode_rpc_url

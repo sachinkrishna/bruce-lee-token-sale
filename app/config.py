@@ -25,6 +25,11 @@ class Settings(BaseSettings):
 
     xfee_token_mint: str = ""
     pool_address: str = ""
+    # Base58 private key of the staking pool's authority. When unset, the
+    # backend falls back to MASTER_WALLET_PRIVATE_KEY for backward compatibility
+    # with single-keypair deployments. Use this to keep the on-chain pool
+    # authority independent of the master / commission / global-pool wallet.
+    pool_authority_private_key: str = ""
 
     quicknode_rpc_url: str = ""
     sol_price_api_url: str = ""
@@ -61,3 +66,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def staking_signer_private_key() -> str:
+    """Resolve the base58 private key that signs on-chain stake calls.
+
+    Prefers POOL_AUTHORITY_PRIVATE_KEY (dedicated staking pool authority).
+    Falls back to MASTER_WALLET_PRIVATE_KEY so legacy single-keypair
+    deployments keep working without any env change.
+    """
+    return settings.pool_authority_private_key or settings.master_wallet_private_key

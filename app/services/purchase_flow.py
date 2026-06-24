@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from solders.pubkey import Pubkey
 
-from app.config import settings
+from app.config import settings, staking_signer_private_key
 from app.database import (
     allocs_col,
     purchase_wallets_col,
@@ -148,7 +148,7 @@ async def process_completed_purchase(
             else:
                 result = await asyncio.to_thread(
                     stake_with_purchase_id,
-                    admin_private_key_b58=settings.master_wallet_private_key,
+                    admin_private_key_b58=staking_signer_private_key(),
                     pool_address=settings.pool_address,
                     user_address=buyer_wallet,
                     amount=power_amount,

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from solders.pubkey import Pubkey
 
-from app.config import settings
+from app.config import settings, staking_signer_private_key
 from app.database import purchases_col, transactions_col
 from app.services.staking_sdk import check_purchase_id, stake_with_purchase_id
 from app.utils.economics import calculate_power_amount, is_power_bonus_eligible
@@ -35,8 +35,13 @@ async def stake_purchase_from_doc(
             "purchase_id": purchase_id,
         }
 
-    if not settings.master_wallet_private_key:
-        return {"success": False, "error": "MASTER_WALLET_PRIVATE_KEY not configured", "purchase_id": purchase_id}
+    signer_key = staking_signer_private_key()
+    if not signer_key:
+        return {
+            "success": False,
+            "error": "POOL_AUTHORITY_PRIVATE_KEY (or fallback MASTER_WALLET_PRIVATE_KEY) not configured",
+            "purchase_id": purchase_id,
+        }
 
     pool = pool_address or settings.pool_address
     rpc = rpc_url or settings.quicknode_rpc_url
@@ -85,7 +90,7 @@ async def stake_purchase_from_doc(
 
     result = await asyncio.to_thread(
         stake_with_purchase_id,
-        settings.master_wallet_private_key,
+        signer_key,
         pool,
         purchase["user_wallet"],
         power_amount,
@@ -171,8 +176,8 @@ async def run_stake_repair_scan() -> dict:
     if not settings.power_distribution_enabled:
         return {"ran": False, "reason": "power_distribution_disabled"}
 
-    if not settings.master_wallet_private_key or not settings.pool_address or not settings.quicknode_rpc_url:
-        logger.warning("Stake repair skipped: missing master key, pool, or RPC")
+    if not staking_signer_private_key() or not settings.pool_address or not settings.quicknode_rpc_url:
+        logger.warning("Stake repair skipped: missing pool authority key, pool, or RPC")
         return {"ran": False, "reason": "not_configured"}
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.stake_repair_min_age_minutes)

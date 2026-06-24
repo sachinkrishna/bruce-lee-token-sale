@@ -50,6 +50,13 @@ services:
       - key: POOL_ADDRESS
         scope: RUN_TIME
         value: ""        # POWER staking pool address
+      - key: POOL_AUTHORITY_PRIVATE_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: ""        # base58 secret key of the staking pool's authority.
+                         # Leave empty to fall back to MASTER_WALLET_PRIVATE_KEY.
+                         # Set when the on-chain pool authority is a dedicated
+                         # keypair separate from the master / commission wallet.
       - key: QUICKNODE_RPC_URL
         scope: RUN_TIME
         type: SECRET

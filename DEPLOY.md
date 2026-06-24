@@ -55,6 +55,7 @@ This uses the committed `.do/app.yaml` so the deploy is reproducible.
    - `QUICKNODE_RPC_URL`
    - `ADMIN_API_KEY` — generate with `openssl rand -hex 32`
    - `GLOBAL_POOL_FUNDING_WALLET_PRIVATE_KEY` — same as `MASTER_WALLET_PRIVATE_KEY` for our setup (master = funding wallet)
+   - `POOL_AUTHORITY_PRIVATE_KEY` — base58 secret key of the staking pool's authority. Leave **empty** to keep the legacy behavior of signing stakes with `MASTER_WALLET_PRIVATE_KEY`. Set this when the on-chain pool authority is a dedicated keypair separate from master.
 
    And the non-secret values that the spec has as `""`:
 
