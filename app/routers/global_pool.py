@@ -17,6 +17,8 @@ from app.services.global_pool import (
     process_due_pools,
     settle_pool,
 )
+from app.services.sol_price import get_sol_price
+from app.services.solana_rpc import get_balance
 
 
 def _jsonable(value: Any) -> Any:
@@ -49,6 +51,45 @@ admin_router = APIRouter(
 @router.get("/summary")
 async def global_pool_summary():
     return _jsonable(await get_global_pool_summary())
+
+
+@router.get("/funds")
+async def global_pool_funds():
+    """Live SOL balance of the global pool funding wallet.
+
+    This is the wallet from which the current pool will be settled at the
+    end of its window. The balance updates in real time as master receives
+    its differential share from each sale.
+    """
+    funding_wallet = settings.master_wallet_address
+    if not funding_wallet:
+        raise HTTPException(
+            status_code=500,
+            detail="Global pool funding wallet not configured",
+        )
+
+    try:
+        balance_lamports = await get_balance(funding_wallet)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to read on-chain balance: {exc}")
+    balance_sol = balance_lamports / 1e9
+
+    try:
+        sol_price = await get_sol_price()
+    except Exception:
+        sol_price = 0.0
+    balance_usd = balance_sol * sol_price
+
+    pool = await get_current_pool()
+
+    return {
+        "funding_wallet": funding_wallet,
+        "balance_lamports": balance_lamports,
+        "balance_sol": balance_sol,
+        "balance_usd": balance_usd,
+        "sol_price_usd": sol_price,
+        "pool": _jsonable(pool) if pool else None,
+    }
 
 
 @router.get("/")
