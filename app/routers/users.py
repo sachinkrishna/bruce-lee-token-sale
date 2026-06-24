@@ -193,32 +193,57 @@ async def get_direct_referrals(wallet_address: str):
 
 
 @router.get("/{wallet_address}/tree")
-async def get_user_tree(wallet_address: str):
+async def get_user_tree(
+    wallet_address: str,
+    max_depth: int = Query(
+        50,
+        ge=1,
+        le=200,
+        description="Maximum recursion depth. Default 50 (well above the 15-tier rank system).",
+    ),
+):
     validate_solana_pubkey(wallet_address)
 
     user = await users_col().find_one({"wallet_address": wallet_address})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    tree = await _build_tree(wallet_address, user.get("level", 1), max_depth=5)
+    tree, truncated = await _build_tree(wallet_address, user.get("level", 1), max_depth=max_depth)
+    if truncated:
+        tree["truncated"] = True
+        tree["max_depth"] = max_depth
     return tree
 
 
-async def _build_tree(wallet: str, level: int, max_depth: int, current_depth: int = 0) -> dict:
+async def _build_tree(
+    wallet: str,
+    level: int,
+    max_depth: int,
+    current_depth: int = 0,
+) -> tuple[dict, bool]:
+    """Recursive subtree builder. Returns (node, truncated_anywhere)."""
     node = {"wallet": wallet, "level": level, "children": []}
 
     if current_depth >= max_depth:
-        return node
+        has_children = await relationship_tree_col().count_documents(
+            {"referrer_wallet": wallet}, limit=1
+        )
+        return node, bool(has_children)
 
+    truncated = False
     children_cursor = relationship_tree_col().find({"referrer_wallet": wallet})
     async for child_tree in children_cursor:
         child_wallet = child_tree["wallet_address"]
         child_user = await users_col().find_one({"wallet_address": child_wallet})
         child_level = child_user.get("level", 1) if child_user else 1
-        child_node = await _build_tree(child_wallet, child_level, max_depth, current_depth + 1)
+        child_node, child_truncated = await _build_tree(
+            child_wallet, child_level, max_depth, current_depth + 1
+        )
         node["children"].append(child_node)
+        if child_truncated:
+            truncated = True
 
-    return node
+    return node, truncated
 
 
 _DISTRIBUTED_STATUSES = ("staked", "already_staked")
