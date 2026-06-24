@@ -114,6 +114,25 @@ async def stake_purchase_from_doc(
             result.get("signature"),
             power_amount,
         )
+    else:
+        err_msg = result.get("error") or str(result)
+        logger.warning(
+            "Stake failed for purchase %s pool=%s user=%s amount=%s: %s",
+            purchase_id,
+            pool,
+            purchase["user_wallet"],
+            power_amount,
+            err_msg,
+        )
+        await purchases_col().update_one(
+            {"_id": pid},
+            {
+                "$set": {
+                    "power_distribution_last_error": err_msg,
+                    "power_distribution_last_attempt_at": datetime.now(timezone.utc),
+                }
+            },
+        )
 
     if result.get("success") and result.get("signature"):
         await purchases_col().update_one(
@@ -176,9 +195,25 @@ async def run_stake_repair_scan() -> dict:
     if not settings.power_distribution_enabled:
         return {"ran": False, "reason": "power_distribution_disabled"}
 
-    if not staking_signer_private_key() or not settings.pool_address or not settings.quicknode_rpc_url:
+    signer_key = staking_signer_private_key()
+    if not signer_key or not settings.pool_address or not settings.quicknode_rpc_url:
         logger.warning("Stake repair skipped: missing pool authority key, pool, or RPC")
         return {"ran": False, "reason": "not_configured"}
+
+    try:
+        import base58
+        from solders.keypair import Keypair
+
+        signer_pubkey = str(Keypair.from_bytes(base58.b58decode(signer_key)).pubkey())
+        using_fallback = not settings.pool_authority_private_key
+        logger.info(
+            "Stake repair signer: %s (pool=%s, fallback_to_master=%s)",
+            signer_pubkey,
+            settings.pool_address,
+            using_fallback,
+        )
+    except Exception:
+        logger.warning("Stake repair: failed to derive signer pubkey for log line", exc_info=True)
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.stake_repair_min_age_minutes)
     since = datetime.fromtimestamp(settings.stake_repair_since_unix, tz=timezone.utc)
