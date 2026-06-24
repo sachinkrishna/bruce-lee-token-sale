@@ -390,6 +390,8 @@ async def get_user_power(
                     "power_bonus_applied": bonus_applied,
                     "power_bonus_amount": int(bonus_portion),
                     "power_distribution_status": p.get("power_distribution_status"),
+                    "power_distribution_last_error": p.get("power_distribution_last_error"),
+                    "power_distribution_last_attempt_at": p.get("power_distribution_last_attempt_at"),
                     "token_dispatch_tx": p.get("token_dispatch_tx"),
                     "power_staked_at": p.get("power_staked_at"),
                     "confirmed_at": p.get("confirmed_at"),

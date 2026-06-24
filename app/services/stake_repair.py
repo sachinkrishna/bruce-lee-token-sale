@@ -268,6 +268,14 @@ async def run_stake_repair_scan() -> dict:
             stats["skipped_already_staked"],
             stats["failed"],
         )
+        if stats["failed"] and stats["errors"]:
+            sample = stats["errors"][0]
+            logger.warning(
+                "Stake repair: %s failure(s). First: purchase=%s error=%s",
+                stats["failed"],
+                sample.get("purchase_id"),
+                sample.get("error"),
+            )
 
     return stats
 
