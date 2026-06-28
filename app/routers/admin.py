@@ -1272,8 +1272,12 @@ async def reset_system():
     }
 
 
-def _verify_master_signature(message: str, signature_encoded: str) -> bool:
-    """Verify that message was signed by the master wallet. Accepts base58 or base64 encoded signature."""
+def _verify_signature_by_pubkey(message: str, signature_encoded: str, pubkey_b58: str) -> bool:
+    """Verify an Ed25519 signature against an arbitrary base58-encoded Solana pubkey.
+
+    Accepts the signature itself as either base58 or base64. Returns True iff the
+    bytes verify against `(message, pubkey)`.
+    """
     if settings.test_mode:
         return signature_encoded == "test_signature"
     try:
@@ -1281,10 +1285,9 @@ def _verify_master_signature(message: str, signature_encoded: str) -> bool:
         import base64
         from nacl.signing import VerifyKey
 
-        pubkey_bytes = base58.b58decode(settings.master_wallet_address)
+        pubkey_bytes = base58.b58decode(pubkey_b58)
         msg_bytes = message.encode("utf-8")
 
-        # Try base58 first, then base64
         sig_bytes = None
         for decode_fn, name in [(base58.b58decode, "base58"), (base64.b64decode, "base64")]:
             try:
@@ -1304,8 +1307,13 @@ def _verify_master_signature(message: str, signature_encoded: str) -> bool:
         verify_key.verify(msg_bytes, sig_bytes)
         return True
     except Exception as e:
-        logger.warning(f"Signature verification failed: {e}")
+        logger.warning("Signature verification failed against pubkey %s: %s", pubkey_b58, e)
         return False
+
+
+def _verify_master_signature(message: str, signature_encoded: str) -> bool:
+    """Backward-compat alias: verify a signature against the master wallet pubkey."""
+    return _verify_signature_by_pubkey(message, signature_encoded, settings.master_wallet_address)
 
 
 @public_admin_router.post("/set-user-level")
@@ -1326,9 +1334,15 @@ async def set_user_level(req: SetUserLevelRequest, x_admin_key: str = Header(Non
         raise HTTPException(status_code=400, detail=f"Level must be between 1 and {MAX_COMMISSION_LEVEL}")
 
     if not has_admin_key:
+        expected_signer = (
+            settings.set_user_level_signer_wallet or settings.master_wallet_address
+        )
         expected_message = f"set-user-level:{req.wallet_address}:{req.level}"
-        if not _verify_master_signature(expected_message, req.signature):
-            raise HTTPException(status_code=401, detail="Invalid master wallet signature")
+        if not _verify_signature_by_pubkey(expected_message, req.signature, expected_signer):
+            raise HTTPException(
+                status_code=401,
+                detail=f"Invalid signature (expected signer: {expected_signer})",
+            )
 
     user = await users_col().find_one({"wallet_address": req.wallet_address})
     if not user:

@@ -88,6 +88,12 @@ services:
         type: SECRET
         value: ""        # generate a long random string
 
+      # Optional: separate signer pubkey for POST /admin/set-user-level.
+      # If empty, master wallet is used. Header auth (X-Admin-Key) bypasses this.
+      - key: SET_USER_LEVEL_SIGNER_WALLET
+        scope: RUN_TIME
+        value: ""
+
       # ── Test mode OFF in production ───────────────────────────────────
       - key: TEST_MODE
         scope: RUN_TIME

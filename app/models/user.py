@@ -12,7 +12,7 @@ class UserRegisterRequest(BaseModel):
 class SetUserLevelRequest(BaseModel):
     wallet_address: str
     level: int
-    signature: Optional[str] = None  # base58 or base64 encoded signature of "set-user-level:{wallet_address}:{level}" signed by master wallet
+    signature: Optional[str] = None  # base58 or base64 encoded Ed25519 signature of "set-user-level:{wallet_address}:{level}" signed by SET_USER_LEVEL_SIGNER_WALLET (falls back to master wallet if unset)
 
 
 class UserResponse(BaseModel):

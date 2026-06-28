@@ -43,6 +43,11 @@ class Settings(BaseSettings):
 
     admin_api_key: str = ""
 
+    # Optional: a separate Solana wallet (base58 pubkey) authorized to sign
+    # set-user-level requests. If empty, master wallet is used. The X-Admin-Key
+    # header path is unaffected by this setting.
+    set_user_level_signer_wallet: str = ""
+
     test_mode: bool = False
     test_sol_price: float = 150.0
     power_distribution_enabled: bool = True
