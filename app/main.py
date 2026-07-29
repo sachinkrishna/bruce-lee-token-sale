@@ -70,16 +70,18 @@ async def lifespan(app: FastAPI):
         })
         logger.info(f"Master wallet created: {settings.master_wallet_address}")
     else:
-        if existing.get("level", 1) < MAX_COMMISSION_LEVEL or not existing.get("is_valid_referrer", False):
+        if existing.get("level", 1) != MAX_COMMISSION_LEVEL or not existing.get("is_valid_referrer", False):
             await users_col().update_one(
                 {"wallet_address": settings.master_wallet_address},
                 {"$set": {"level": MAX_COMMISSION_LEVEL, "is_valid_referrer": True}},
             )
-            logger.info("Master wallet promoted to level %s", MAX_COMMISSION_LEVEL)
+            logger.info("Master wallet set to level %s", MAX_COMMISSION_LEVEL)
         logger.info(f"Master wallet exists: {settings.master_wallet_address}")
 
-    if settings.root_child_wallet_address:
+    if settings.enforce_root_child and settings.root_child_wallet_address:
         await _ensure_root_child()
+
+    await _migrate_ladder_to_15_tier()
 
     await ensure_wallet_pool()
     logger.info("Purchase wallet pool checked")
@@ -203,6 +205,93 @@ async def _migrate_levels_to_16_tier():
         upsert=True,
     )
     logger.info("Level migration to 16-tier applied (total shifted: %s)", total_shifted)
+
+
+async def _migrate_ladder_to_15_tier():
+    """Shift the DB from the 16-tier ladder to the new 15-tier ladder.
+
+    - Master is repositioned to the new max (L15) — the master-bootstrap block
+      above has already handled this via MAX_COMMISSION_LEVEL, so this migration
+      only cleans up any remaining stragglers (defensive) and demotes the
+      root-child wallet based on its actual sales volume.
+    - Root-child loses its reserved slot. Its DB record and downline stay
+      intact; its `level` is recomputed from `total_sales_usd` so it re-enters
+      the ranking system as a regular user.
+
+    Idempotent via a marker doc in `system_meta`.
+    """
+    from datetime import datetime, timezone
+    from app.utils.level import get_level_from_sales
+
+    marker_id = "ladder_renumber_to_15_tier"
+    marker = await system_meta_col().find_one({"_id": marker_id})
+    if marker and marker.get("applied"):
+        return
+
+    # Master used to be at L16 under the 16-tier ladder; force it to the new
+    # MAX (15). The master-bootstrap block only *upgrades* master, so it won't
+    # step master down from 16 -> 15 on its own — we do that here.
+    if settings.master_wallet_address:
+        master_result = await users_col().update_one(
+            {"wallet_address": settings.master_wallet_address},
+            {"$set": {"level": MAX_COMMISSION_LEVEL, "is_valid_referrer": True}},
+        )
+        if master_result.modified_count:
+            logger.info(
+                "Ladder migration: master %s repositioned to new max L%s",
+                settings.master_wallet_address, MAX_COMMISSION_LEVEL,
+            )
+
+    # Any *other* straggler at old L16 (shouldn't happen unless someone was
+    # manually promoted there) gets recomputed from sales volume.
+    stragglers = 0
+    async for user in users_col().find(
+        {"level": 16, "wallet_address": {"$ne": settings.master_wallet_address}}
+    ):
+        new_lvl = get_level_from_sales(float(user.get("total_sales_usd", 0.0) or 0.0))
+        await users_col().update_one(
+            {"wallet_address": user["wallet_address"]},
+            {"$set": {"level": new_lvl}},
+        )
+        stragglers += 1
+        logger.info(
+            "Ladder migration: %s (was L16) recomputed to L%s from total_sales_usd=$%s",
+            user["wallet_address"], new_lvl, user.get("total_sales_usd", 0.0),
+        )
+
+    # Root-child (if it exists) loses its reserved slot.
+    root_child_addr = settings.root_child_wallet_address
+    root_child_demoted = 0
+    if root_child_addr and root_child_addr != settings.master_wallet_address:
+        rc = await users_col().find_one({"wallet_address": root_child_addr})
+        if rc and rc.get("level", 1) >= 14:
+            new_lvl = get_level_from_sales(float(rc.get("total_sales_usd", 0.0) or 0.0))
+            await users_col().update_one(
+                {"wallet_address": root_child_addr},
+                {"$set": {"level": new_lvl}},
+            )
+            root_child_demoted = 1
+            logger.info(
+                "Ladder migration: root-child %s demoted from L%s to L%s (total_sales_usd=$%s)",
+                root_child_addr, rc.get("level"), new_lvl, rc.get("total_sales_usd", 0.0),
+            )
+
+    await system_meta_col().update_one(
+        {"_id": marker_id},
+        {
+            "$set": {
+                "applied": True,
+                "applied_at": datetime.now(timezone.utc),
+                "stragglers_recomputed": stragglers,
+                "root_child_demoted": root_child_demoted,
+            }
+        },
+        upsert=True,
+    )
+    logger.info(
+        "Ladder migration to 15-tier applied (stragglers=%s, root_child_demoted=%s)",
+        stragglers, root_child_demoted,
+    )
 
 
 async def _ensure_root_child():

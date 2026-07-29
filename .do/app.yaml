@@ -148,10 +148,10 @@ services:
         value: BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry
       - key: ROOT_CHILD_LEVEL
         scope: RUN_TIME
-        value: "15"
+        value: "14"
       - key: ROOT_CHILD_MAX_DIRECT_REFERRALS
         scope: RUN_TIME
         value: "1"
       - key: ENFORCE_ROOT_CHILD
         scope: RUN_TIME
-        value: "true"
+        value: "false"

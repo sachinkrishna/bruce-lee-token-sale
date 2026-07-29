@@ -33,8 +33,7 @@ These are constants. Hard-code or env-config them on the frontend.
 
 | Name | Value | Purpose |
 |---|---|---|
-| `MASTER_WALLET` | `DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB` | Top of referral tree, level 16 (100% rate). **Cannot be used as a referrer in the registration form** — backend rejects it. |
-| `ROOT_CHILD_WALLET` | `BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry` | Single child of master, level 15 (95% rate). The very first user to register MUST register under this wallet. After that, registrations under it are rejected (limit = 1 direct referral). |
+| `MASTER_WALLET` | `DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB` | Top of referral tree, level 15 (100% rate). Can be used as `referrer_wallet` like any normal wallet. |
 | `XFEE_PRICE_USD` | `1.00` | 1 XFEE always costs $1 USD. Hard-coded. The amount of SOL needed is computed from the live SOL/USD oracle. |
 | `MIN_PURCHASE_XFEE` | `6` | Minimum purchase size (= $6). Smaller amounts are allowed by the API but the gas buffer math is tuned for ≥ $6. |
 | `PURCHASE_TIMEOUT_MINUTES` | `15` | A purchase expires if SOL doesn't arrive in 15 minutes. |
@@ -42,25 +41,21 @@ These are constants. Hard-code or env-config them on the frontend.
 
 ---
 
-## 4. Referral structure — the one thing that's non-obvious
+## 4. Referral structure
 
-The system enforces a strict referral hierarchy:
+Every user has exactly one referrer. Master sits at the top of the tree; below it the shape is fully organic.
 
 ```
-master (L16, 100%)
-  └── root-child (L15, 95%)        [max 1 direct referral]
-        └── first founder           [the very first real user]
-              └── customer 1
-              └── customer 2
-              └── customer N
+master (L15, 100%)
+  └── any user
+        └── any user
+              └── ...
 ```
 
 **Rules the frontend MUST honor:**
 
-1. **A referrer is always required.** There is no anonymous registration. If the user lands on the site without a `?ref=` query param, redirect them to a "you need a referral link to join" screen — do not silently substitute master/root-child as the default.
-2. **Master cannot be set as `referrer_wallet` for any normal user.** The backend returns `400 "Master wallet can only refer the configured root child wallet"`.
-3. **Root-child can only be set as `referrer_wallet` for the very first user.** Subsequent attempts return `400 "Configured root child wallet has reached its direct referral limit (1)"`. The UI should detect this and show "this referral link has reached its limit".
-4. **A referrer must have completed at least one purchase** before they can refer anyone. If you POST a registration with a brand-new referrer who hasn't bought yet, backend returns `400 "Referrer has not completed a purchase yet"`.
+1. **A referrer is always required.** There is no anonymous registration. If the user lands on the site without a `?ref=` query param, redirect them to a "you need a referral link to join" screen.
+2. **A referrer must have completed at least one purchase** before they can refer anyone. If you POST a registration with a brand-new referrer who hasn't bought yet, backend returns `400 "Referrer has not completed a purchase yet"`. Master is the seed exception — it's always a valid referrer.
 
 Suggested referral link format: `https://yoursite.com/?ref=<WALLET>`
 
@@ -75,7 +70,7 @@ if (!referrer) {
 
 ## 5. Commission model — what to display to users
 
-Cumulative-differential commission ladder (16 tiers, all values are commission *rate*):
+Cumulative-differential commission ladder (15 tiers, all values are commission *rate*):
 
 | Level | Rate | Sales volume needed to reach this level (USD) | Notes |
 |---|---|---|---|
@@ -89,14 +84,13 @@ Cumulative-differential commission ladder (16 tiers, all values are commission *
 | 8 | 34% | 250,000 | |
 | 9 | 36% | 1,000,000 | |
 | 10 | 40% | 2,500,000 | |
-| 11 | 45% | 1,000,000,000 | Effectively manual-only |
-| 12 | 50% | 2,000,000,000 | Manual-only |
-| 13 | 60% | 3,000,000,000 | Manual-only |
-| 14 | 75% | 5,000,000,000 | Manual-only |
-| 15 | 95% | 9,000,000,000 | Reserved (root-child) |
-| 16 | 100% | 10,000,000,000 | Reserved (master) |
+| 11 | 42.5% | 1,000,000,000 | Effectively manual-only |
+| 12 | 45% | 2,000,000,000 | Manual-only |
+| 13 | 50% | 3,000,000,000 | Manual-only |
+| 14 | 95% | 5,000,000,000 | Manual-only |
+| 15 | 100% | 10,000,000,000 | Reserved (master) |
 
-Levels 1–10 are reachable organically via `total_sales_usd` volume. Levels 11–16 are manual upgrades only — they exist for special operator wallets.
+Levels 1–10 are reachable organically via `total_sales_usd` volume. Levels 11–15 are manual upgrades only — they exist for special operator wallets.
 
 These values are also exposed via `GET /api/v1/stats/levels` so the frontend can fetch them at runtime rather than hard-coding.
 
@@ -104,14 +98,14 @@ These values are also exposed via `GET /api/v1/stats/levels` so the frontend can
 
 For each purchase, the backend walks up the buyer's referrer chain. Each ancestor receives `(their_rate − max_rate_already_paid_below) × sale_amount`.
 
-**Example:** Buyer C (L1, 20%) buys $100. Their chain is B (L1, 20%) → A (L1, 20%) → root-child (L15, 95%) → master (L16, 100%).
+**Example:** Buyer C (L1, 20%) buys $100. Their chain is B (L1, 20%) → A (L1, 20%) → operator (L14, 95%) → master (L15, 100%).
 
 | Ancestor | Their rate | Max paid below | Receives | USD |
 |---|---|---|---|---|
 | B (L1) | 20% | 0% | 20% | $20.00 |
 | A (L1) | 20% | 20% | **0%** — zero-alloc | $0 → global pool point of $20 |
-| root-child (L15) | 95% | 20% | 75% | $75.00 |
-| master (L16) | 100% | 95% | 5% | $5.00 |
+| operator (L14) | 95% | 20% | 75% | $75.00 |
+| master (L15) | 100% | 95% | 5% | $5.00 |
 
 So even though A is in C's tree, they receive 0 SOL on this purchase because B already consumed the L1 differential. A is recorded as a "zero-alloc" — they accrue **global pool points** equal to the USD value B received ($20).
 
@@ -193,8 +187,6 @@ Skip admin endpoints in the customer-facing build unless you're also shipping an
 |---|---|---|
 | 200 | — | Proceed to purchase flow |
 | 400 | `Invalid Solana address: …` | Show "invalid wallet address" |
-| 400 | `Master wallet can only refer the configured root child wallet` | The user passed master as their referrer — show "invalid invite link" |
-| 400 | `Configured root child wallet has reached its direct referral limit (1)` | First-founder slot is already taken; this referral link is no longer usable |
 | 400 | `Referrer not found` | Referrer wallet isn't registered yet |
 | 400 | `Referrer has not completed a purchase yet` | Referrer is registered but hasn't bought — they aren't a valid referrer yet |
 | 409 | `Wallet already registered` | **Not an error** — proceed straight to the dashboard |
@@ -570,7 +562,7 @@ await fetch(`${API}/api/v1/admin/set-user-level`, {
 
 Rules:
 - Levels go up only, never down. Backend returns `400` on a downgrade attempt.
-- Range is 1–15, but reserve 14/15 for root-child/master.
+- Range is 1–15. Level 15 is reserved for master.
 - Without the `X-Admin-Key` header **and** without a valid `signature`, the call returns `401`.
 
 ---
@@ -672,7 +664,6 @@ if (final.status === "completed") {
 ```
 BASE             https://brucelee-app-sale-cbsgj.ondigitalocean.app
 MASTER           DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB
-ROOT_CHILD       BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry
 PRICE            1 XFEE = $1 USD (always)
 SOL ORACLE       live via /api/v1/stats/global → sol_price
 NETWORK          mainnet-beta
