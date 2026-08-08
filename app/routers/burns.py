@@ -1,10 +1,10 @@
-"""Public burn aggregates for fixed token_buy / fee vault wallets."""
+"""Public burn aggregates for the deployment-configured token_buy / fee vault wallets."""
 
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Query
 
-from app.config import BURN_FEE_WALLET, BURN_TOKEN_BUY_WALLET
+from app.config import settings
 from app.database import burns_col
 from app.models.burn_summary import (
     BurnRecentResponse,
@@ -17,18 +17,18 @@ router = APIRouter(prefix="/api/v1/burn", tags=["burn"])
 
 
 def _burn_kind(wallet: str) -> Optional[Literal["token_buy", "fee"]]:
-    if wallet == BURN_TOKEN_BUY_WALLET:
+    if settings.burn_token_buy_wallet and wallet == settings.burn_token_buy_wallet:
         return "token_buy"
-    if wallet == BURN_FEE_WALLET:
+    if settings.burn_fee_wallet and wallet == settings.burn_fee_wallet:
         return "fee"
     return None
 
 
 @router.get("/summary", response_model=BurnSummaryResponse)
 async def burn_summary():
-    token_buy = BURN_TOKEN_BUY_WALLET
-    fee_wallet = BURN_FEE_WALLET
-    wallets = [token_buy, fee_wallet]
+    token_buy = settings.burn_token_buy_wallet
+    fee_wallet = settings.burn_fee_wallet
+    wallets = [w for w in (token_buy, fee_wallet) if w]
 
     pipeline = [
         {"$match": {"wallet": {"$in": wallets}}},
@@ -41,18 +41,23 @@ async def burn_summary():
         if isinstance(w, str):
             totals[w] = float(doc.get("burn") or 0.0)
 
-    summaries = [
-        BurnWalletSummary(
-            wallet=token_buy,
-            burn=totals.get(token_buy, 0.0),
-            type="token_buy",
-        ),
-        BurnWalletSummary(
-            wallet=fee_wallet,
-            burn=totals.get(fee_wallet, 0.0),
-            type="fee",
-        ),
-    ]
+    summaries: list[BurnWalletSummary] = []
+    if token_buy:
+        summaries.append(
+            BurnWalletSummary(
+                wallet=token_buy,
+                burn=totals.get(token_buy, 0.0),
+                type="token_buy",
+            )
+        )
+    if fee_wallet:
+        summaries.append(
+            BurnWalletSummary(
+                wallet=fee_wallet,
+                burn=totals.get(fee_wallet, 0.0),
+                type="fee",
+            )
+        )
     return BurnSummaryResponse(summaries=summaries)
 
 

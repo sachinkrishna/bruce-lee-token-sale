@@ -46,8 +46,12 @@ from solana.rpc.api import Client
 from solana.rpc.types import MemcmpOpts, TxOpts
 from solana.rpc.commitment import Confirmed
 
+from app.config import DEFAULT_STAKING_PROGRAM_ID, settings
+
 # ── Constants ─────────────────────────────────────────────────────────────────
-PROGRAM_ID = Pubkey.from_string("EX7YLYMv9pjarwgFF8JN5kwSohuhgVVmTDfD31ETekBC")
+# Configurable per-deployment via STAKING_PROGRAM_ID env var. Falls back to
+# the historical default so existing deployments keep working with no change.
+PROGRAM_ID = Pubkey.from_string(settings.staking_program_id or DEFAULT_STAKING_PROGRAM_ID)
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 DEFAULT_RPC = os.getenv(
     "ANCHOR_PROVIDER_URL", "https://rpc.shyft.to?api_key=VQMa7xeiPCjxEUjI"

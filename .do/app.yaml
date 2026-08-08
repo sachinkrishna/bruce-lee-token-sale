@@ -1,4 +1,4 @@
-name: bruce-lee-sales
+name: xfee-sol-sale
 region: nyc
 
 services:
@@ -7,7 +7,7 @@ services:
     source_dir: /
     github:
       repo: sachinkrishna/bruce-lee-token-sale
-      branch: main
+      branch: xfee-sol-sale
       deploy_on_push: true
     http_port: 8000
     instance_size_slug: basic-xs
@@ -25,19 +25,19 @@ services:
         value: ""        # mongodb+srv://<user>:<pass>@cluster.xxx.mongodb.net/?retryWrites=true&w=majority
       - key: MONGO_DB_NAME
         scope: RUN_TIME
-        value: bruce_lee_sales
+        value: xfee_sol_sale
 
       # ── Master + Treasury wallets (private keys are SECRETS) ──────────
       - key: MASTER_WALLET_ADDRESS
         scope: RUN_TIME
-        value: DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB
+        value: ""        # base58 pubkey of the master (top-of-tree) wallet
       - key: MASTER_WALLET_PRIVATE_KEY
         scope: RUN_TIME
         type: SECRET
-        value: ""
+        value: ""        # base58 64-byte secret key of the master wallet
       - key: TREASURY_WALLET_ADDRESS
         scope: RUN_TIME
-        value: ""        # the wallet that holds the XFEE token supply
+        value: ""        # wallet that holds the XFEE token supply
       - key: TREASURY_WALLET_PRIVATE_KEY
         scope: RUN_TIME
         type: SECRET
@@ -46,10 +46,10 @@ services:
       # ── Token + Solana RPC ────────────────────────────────────────────
       - key: XFEE_TOKEN_MINT
         scope: RUN_TIME
-        value: ""        # XFEE SPL mint address
+        value: ""        # SPL mint address for the XFEE token
       - key: POOL_ADDRESS
         scope: RUN_TIME
-        value: ""        # POWER staking pool address
+        value: ""        # POWER staking pool PDA
       - key: POOL_AUTHORITY_PRIVATE_KEY
         scope: RUN_TIME
         type: SECRET
@@ -57,16 +57,22 @@ services:
                          # Leave empty to fall back to MASTER_WALLET_PRIVATE_KEY.
                          # Set when the on-chain pool authority is a dedicated
                          # keypair separate from the master / commission wallet.
+      - key: STAKING_PROGRAM_ID
+        scope: RUN_TIME
+        value: ""        # Leave empty to use the default staking program ID
+                         # (EX7YLYMv9pjarwgFF8JN5kwSohuhgVVmTDfD31ETekBC).
+                         # Set only if this deployment targets a different
+                         # on-chain staking program.
       - key: QUICKNODE_RPC_URL
         scope: RUN_TIME
         type: SECRET
-        value: ""        # https://....quiknode.pro/<token>/
+        value: ""        # https://....quiknode.pro/<token>/ or equivalent premium RPC
       - key: SOL_PRICE_API_URL
         scope: RUN_TIME
         value: https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd
       - key: XFEE_TOTAL_SUPPLY
         scope: RUN_TIME
-        value: "400000"
+        value: "0"       # 0 = unlimited supply (display-only cap)
 
       # ── Pricing / purchase window ─────────────────────────────────────
       - key: PURCHASE_WALLET_EXPIRY_MINUTES
@@ -86,11 +92,33 @@ services:
       - key: ADMIN_API_KEY
         scope: RUN_TIME
         type: SECRET
-        value: ""        # generate a long random string
+        value: ""        # generate with `openssl rand -hex 32`
 
       # Optional: separate signer pubkey for POST /admin/set-user-level.
       # If empty, master wallet is used. Header auth (X-Admin-Key) bypasses this.
       - key: SET_USER_LEVEL_SIGNER_WALLET
+        scope: RUN_TIME
+        value: ""
+
+      # ── Root-child enforcement (optional legacy feature) ──────────────
+      - key: ROOT_CHILD_WALLET_ADDRESS
+        scope: RUN_TIME
+        value: ""        # leave empty unless ENFORCE_ROOT_CHILD=true
+      - key: ROOT_CHILD_LEVEL
+        scope: RUN_TIME
+        value: "14"
+      - key: ROOT_CHILD_MAX_DIRECT_REFERRALS
+        scope: RUN_TIME
+        value: "1"
+      - key: ENFORCE_ROOT_CHILD
+        scope: RUN_TIME
+        value: "false"
+
+      # ── Burn dashboard (optional; leave empty to disable) ─────────────
+      - key: BURN_TOKEN_BUY_WALLET
+        scope: RUN_TIME
+        value: ""
+      - key: BURN_FEE_WALLET
         scope: RUN_TIME
         value: ""
 
@@ -131,7 +159,7 @@ services:
       - key: GLOBAL_POOL_FUNDING_WALLET_PRIVATE_KEY
         scope: RUN_TIME
         type: SECRET
-        value: ""        # base58 secret key of the master/top wallet (DXSEB...)
+        value: ""        # base58 secret key of the funding wallet (usually master)
       - key: GLOBAL_POOL_FUNDING_BUFFER_SOL
         scope: RUN_TIME
         value: "0.05"
@@ -141,17 +169,3 @@ services:
       - key: GLOBAL_POOL_CONFIRM_RETRIES
         scope: RUN_TIME
         value: "30"
-
-      # ── Root-child enforcement ────────────────────────────────────────
-      - key: ROOT_CHILD_WALLET_ADDRESS
-        scope: RUN_TIME
-        value: BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry
-      - key: ROOT_CHILD_LEVEL
-        scope: RUN_TIME
-        value: "14"
-      - key: ROOT_CHILD_MAX_DIRECT_REFERRALS
-        scope: RUN_TIME
-        value: "1"
-      - key: ENFORCE_ROOT_CHILD
-        scope: RUN_TIME
-        value: "false"

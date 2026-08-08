@@ -129,12 +129,13 @@ Same as Tier 2, but with mainnet RPC and **small** real amounts.
 ### Prerequisites
 
 1. Production `.env` filled in:
-   - `MASTER_WALLET_ADDRESS=DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB` and its private key.
+   - `MASTER_WALLET_ADDRESS` and its private key.
    - `TREASURY_WALLET_ADDRESS` + private key.
    - `XFEE_TOKEN_MINT`, `POOL_ADDRESS`, `QUICKNODE_RPC_URL`, `SOL_PRICE_API_URL`.
+   - `STAKING_PROGRAM_ID` — leave empty for the default program.
    - `ADMIN_API_KEY` (strong, secret).
    - `GLOBAL_POOL_ENABLED=true`, `GLOBAL_POOL_FUNDING_WALLET_PRIVATE_KEY` = master wallet private key.
-   - `ENFORCE_ROOT_CHILD=true`.
+   - `ENFORCE_ROOT_CHILD=false` (unless you specifically need the reserved-slot behavior).
    - `POWER_DISTRIBUTION_ENABLED` (true or false depending on the launch decision).
 2. Funding wallet pre-loaded with a small SOL amount to cover gas + tiny payouts (e.g., 0.5 SOL).
 3. App deployed to DigitalOcean App Platform (or your target). HTTPS + healthcheck passing.
@@ -161,8 +162,8 @@ Same as Tier 2, but with mainnet RPC and **small** real amounts.
 - [ ] Treasury wallet's XFEE ATA holds enough XFEE for projected sales.
 - [ ] Master wallet has enough SOL for purchase-wallet rent + commission txs + the first global pool payout buffer.
 - [ ] `GLOBAL_POOL_FUNDING_BUFFER_SOL` is high enough to cover tx fees for the largest expected pool's payout count (≈0.000005 SOL per tx, so 0.05 SOL = ~10k tx headroom).
-- [ ] `ROOT_CHILD_WALLET_ADDRESS` matches the agreed wallet (`BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry`).
-- [ ] `ENFORCE_ROOT_CHILD=true`.
+- [ ] `ROOT_CHILD_WALLET_ADDRESS` matches the agreed wallet — only required when `ENFORCE_ROOT_CHILD=true`.
+- [ ] `ENFORCE_ROOT_CHILD` is set to the intended value (default is `false`).
 - [ ] `POWER_DISTRIBUTION_ENABLED` set to the intended launch state.
 - [ ] If `POWER_DISTRIBUTION_ENABLED=false`, `POWER_DELAYED_STAKE_BONUS_MULTIPLIER` is set to the desired bonus (e.g., `1.25`).
 - [ ] `XFEE_PRICE_USD`, `XFEE_TOTAL_SUPPLY`, `PURCHASE_MIN_USD`, `GAS_BUFFER_USD`, `LEAVE_IN_PURCHASE_WALLET_USD` reviewed.

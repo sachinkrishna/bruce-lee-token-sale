@@ -1,18 +1,21 @@
 from pydantic_settings import BaseSettings
 
-# Burn API — fixed in code (not env-overridable)
+# Burn collection name — fixed in code (not env-overridable).
+# The two wallets scanned by /api/v1/burn/* are configurable via env below.
 MONGO_BURN_COLLECTION = "burns"
-BURN_TOKEN_BUY_WALLET = "AUswMSZNVDpTjv38kF7nWoLWjg66n2Fg6pD9LwfuFrAv"
-BURN_FEE_WALLET = "4yji9nRqyjGwg8HkwsGRUM7tuxzjxX6Yia6sbjG3pfuu"
+
+# Default on-chain program ID for the POWER staking program. Override via
+# STAKING_PROGRAM_ID env var when deploying against a different program.
+DEFAULT_STAKING_PROGRAM_ID = "EX7YLYMv9pjarwgFF8JN5kwSohuhgVVmTDfD31ETekBC"
 
 
 class Settings(BaseSettings):
     mongo_uri: str = "mongodb://localhost:27017"
-    mongo_db_name: str = "xfee_sale"
+    mongo_db_name: str = "xfee_sol_sale"
 
     master_wallet_address: str = ""
     master_wallet_private_key: str = ""
-    root_child_wallet_address: str = "BRrtYftGhXBh3JcwmveuB4ZcskkYvUeLzNgPcf5VF6Ry"
+    root_child_wallet_address: str = ""
     root_child_level: int = 14
     root_child_max_direct_referrals: int = 1
     # Enforce that master can only refer the root child and the root child has at
@@ -31,6 +34,15 @@ class Settings(BaseSettings):
     # with single-keypair deployments. Use this to keep the on-chain pool
     # authority independent of the master / commission / global-pool wallet.
     pool_authority_private_key: str = ""
+    # On-chain program ID (base58) for the POWER staking program. Leave unset
+    # to use DEFAULT_STAKING_PROGRAM_ID above. Override when this deployment
+    # targets a different staking program on Solana.
+    staking_program_id: str = ""
+
+    # Wallets scanned by /api/v1/burn/* for the burn dashboard. Optional —
+    # leave empty if this deployment doesn't publish burn stats.
+    burn_token_buy_wallet: str = ""
+    burn_fee_wallet: str = ""
 
     quicknode_rpc_url: str = ""
     sol_price_api_url: str = ""

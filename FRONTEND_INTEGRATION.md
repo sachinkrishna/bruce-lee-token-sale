@@ -18,10 +18,10 @@ A self-contained reference for the team building the customer-facing UI on top o
 
 | Item | Value |
 |---|---|
-| **API base URL** | `https://brucelee-app-sale-cbsgj.ondigitalocean.app` |
+| **API base URL** | `https://<your-deployment>.ondigitalocean.app` (set per-environment) |
 | **All endpoints prefix** | `/api/v1` |
-| **Swagger UI (auto-generated)** | `https://brucelee-app-sale-cbsgj.ondigitalocean.app/docs` |
-| **OpenAPI JSON** | `https://brucelee-app-sale-cbsgj.ondigitalocean.app/openapi.json` |
+| **Swagger UI (auto-generated)** | `<API base>/docs` |
+| **OpenAPI JSON** | `<API base>/openapi.json` |
 | **Health check** | `GET /health` → `{"status":"ok"}` |
 | **Solscan tx links (mainnet)** | `https://solscan.io/tx/{signature}` |
 
@@ -33,7 +33,7 @@ These are constants. Hard-code or env-config them on the frontend.
 
 | Name | Value | Purpose |
 |---|---|---|
-| `MASTER_WALLET` | `DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB` | Top of referral tree, level 15 (100% rate). Can be used as `referrer_wallet` like any normal wallet. |
+| `MASTER_WALLET` | *(set from your backend deployment)* | Top of referral tree, level 15 (100% rate). Can be used as `referrer_wallet` like any normal wallet. Fetch/hard-code once you know your backend's `MASTER_WALLET_ADDRESS`. |
 | `XFEE_PRICE_USD` | `1.00` | 1 XFEE always costs $1 USD. Hard-coded. The amount of SOL needed is computed from the live SOL/USD oracle. |
 | `MIN_PURCHASE_XFEE` | `6` | Minimum purchase size (= $6). Smaller amounts are allowed by the API but the gas buffer math is tuned for ≥ $6. |
 | `PURCHASE_TIMEOUT_MINUTES` | `15` | A purchase expires if SOL doesn't arrive in 15 minutes. |
@@ -590,7 +590,7 @@ All errors share the same shape:
 ## 9. End-to-end example (TypeScript)
 
 ```typescript
-const API = "https://brucelee-app-sale-cbsgj.ondigitalocean.app";
+const API = "https://<your-deployment>.ondigitalocean.app";
 
 // 1. Get the referrer from the URL
 const referrer = new URLSearchParams(location.search).get("ref");
@@ -662,8 +662,8 @@ if (final.status === "completed") {
 ## 11. Quick reference card
 
 ```
-BASE             https://brucelee-app-sale-cbsgj.ondigitalocean.app
-MASTER           DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB
+BASE             https://<your-deployment>.ondigitalocean.app
+MASTER           <from backend MASTER_WALLET_ADDRESS>
 PRICE            1 XFEE = $1 USD (always)
 SOL ORACLE       live via /api/v1/stats/global → sol_price
 NETWORK          mainnet-beta
