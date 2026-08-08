@@ -28,6 +28,33 @@ class Settings(BaseSettings):
     treasury_wallet_private_key: str = ""
 
     xfee_token_mint: str = ""
+
+    # ── Multi-currency purchase support ───────────────────────────────────
+    # Default mode for a fresh deployment. The runtime toggle is persisted in
+    # Mongo (`system_meta._id = "purchase_mode"`); this env var is only used
+    # when that doc doesn't exist yet. Valid: "SOL" | "XFEE".
+    default_purchase_mode: str = "SOL"
+
+    # SPL token accepted for purchase when mode == "XFEE". Distinct from
+    # `xfee_token_mint` which is the ecosystem token tracked by the burn
+    # dashboard — these MAY be the same address, but the fields are separate
+    # so this deployment can pivot to accepting any SPL token as payment
+    # without touching the burn-tracking config.
+    xfee_payment_token_mint: str = ""
+    xfee_payment_token_decimals: int = 9
+    # Oracle used to price the payment token in USD. GET request; JSON path
+    # (dotted) points at the price field inside the response body.
+    xfee_price_oracle_url: str = ""
+    xfee_price_oracle_json_path: str = "data.price"
+    xfee_price_cache_ttl_seconds: int = 30
+    # Gas buffer (in SOL) that the buyer must include on the ephemeral wallet
+    # alongside their XFEE payment, so we can pay tx fees for the commission
+    # + sweep + ATA-creation instructions on the ephemeral wallet's side.
+    xfee_mode_sol_gas_buffer_sol: float = 0.02
+    # Percentage tolerance for detecting the required SOL gas + XFEE token
+    # balance on the ephemeral wallet before triggering the purchase flow.
+    xfee_mode_receive_tolerance: float = 0.95
+
     pool_address: str = ""
     # Base58 private key of the staking pool's authority. When unset, the
     # backend falls back to MASTER_WALLET_PRIVATE_KEY for backward compatibility
@@ -80,7 +107,13 @@ class Settings(BaseSettings):
     global_pool_settlement_concurrency: int = 3
     global_pool_confirm_retries: int = 30
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        # Tolerate leftover env vars from earlier iterations; makes zero-downtime
+        # config edits safer during deploys.
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

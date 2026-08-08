@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -9,7 +10,9 @@ from solders.pubkey import Pubkey
 
 from app.config import settings
 from app.database import allocs_col, purchase_wallets_col, purchases_col, users_col
-from app.services.solana_rpc import get_balance
+from app.services.purchase_mode import get_purchase_mode
+from app.services.solana_rpc import derive_ata, get_balance
+from app.services.xfee_price import get_xfee_price
 from app.models.alloc import AllocResponse
 from app.models.purchase import (
     PurchaseInitiateRequest,
@@ -31,28 +34,99 @@ def validate_solana_pubkey(address: str) -> None:
         raise HTTPException(status_code=400, detail=f"Invalid Solana address: {address}")
 
 
-@router.get("/purchase/estimate")
-async def estimate_purchase(xfee_amount: int = Query(..., ge=1)):
-    """Get estimated SOL needed for a purchase without creating one."""
+async def _price_in_sol_mode(xfee_amount: int, buyer_wallet: str) -> dict:
+    """Compute what a buyer must send when the system is in SOL mode.
+
+    Preserves the existing pricing rules:
+      - <$26 orders: fixed 0.20 SOL gas buffer (in USD terms)
+      - >=$26 orders: $2 default, but if the buyer has enough SOL to spare,
+        pick a random $2-$4 buffer to make repeat purchases harder to trace.
+    """
     sol_price = await get_sol_price()
-    # 1 XFEE = 1 USD (or 10 POWER)
     token_cost_usd = float(xfee_amount)
+    purchase_value_sol = token_cost_usd / sol_price
 
     if token_cost_usd < 26.0:
-        gas_buffer = 0.20
+        gas_buffer_usd = 0.20
     else:
-        gas_buffer = round(random.uniform(2.0, 4.0), 2)
-        
-    usd_total = token_cost_usd + gas_buffer
-    sol_needed = round(usd_total / sol_price, 6)
+        gas_buffer_usd = 2.0
+        try:
+            buyer_balance_lamports = await get_balance(buyer_wallet)
+            buyer_balance_sol = buyer_balance_lamports / 1e9
+            if buyer_balance_sol >= purchase_value_sol + (4.0 / sol_price):
+                gas_buffer_usd = round(random.uniform(2.0, 4.0), 2)
+        except Exception:
+            logger.warning(f"Could not read balance for {buyer_wallet}, using minimum gas buffer")
+
+    sol_needed = (token_cost_usd + gas_buffer_usd) / sol_price
+    return {
+        "sol_price_usd": sol_price,
+        "token_cost_usd": token_cost_usd,
+        "purchase_value_sol": purchase_value_sol,
+        "gas_buffer_usd": gas_buffer_usd,
+        "sol_needed": sol_needed,
+    }
+
+
+async def _price_in_xfee_mode(xfee_amount: int) -> dict:
+    """Compute what a buyer must send when the system is in XFEE mode.
+
+    Buyer sends BOTH:
+      1. The XFEE token amount whose USD value equals `xfee_amount` (each
+         purchase unit is $1 by convention).
+      2. A small SOL gas buffer on the same ephemeral wallet so we can afford
+         tx fees for commission + sweep + ATA-creation calls.
+    """
+    xfee_usd_price = await get_xfee_price()
+    if xfee_usd_price <= 0:
+        raise HTTPException(status_code=502, detail="XFEE price unavailable from oracle")
+
+    token_cost_usd = float(xfee_amount)
+    xfee_tokens_ui = token_cost_usd / xfee_usd_price
+    decimals = int(settings.xfee_payment_token_decimals or 9)
+    # Round UP the raw amount so we always receive at least the target USD;
+    # partial-unit rounding loss is negligible at 9 decimals.
+    xfee_tokens_raw = int(math.ceil(xfee_tokens_ui * (10 ** decimals)))
 
     return {
-        "xfee_amount": xfee_amount,
+        "xfee_price_usd": xfee_usd_price,
         "token_cost_usd": token_cost_usd,
-        "gas_buffer_usd": gas_buffer,
-        "total_usd": usd_total,
-        "sol_price_usd": round(sol_price, 2),
-        "sol_needed": sol_needed,
+        "xfee_expected_ui": xfee_tokens_ui,
+        "xfee_expected_raw": xfee_tokens_raw,
+        "xfee_decimals": decimals,
+        "sol_gas_buffer_sol": float(settings.xfee_mode_sol_gas_buffer_sol),
+    }
+
+
+@router.get("/purchase/estimate")
+async def estimate_purchase(xfee_amount: int = Query(..., ge=1)):
+    """Get the buyer-facing quote for the current purchase mode."""
+    mode_doc = await get_purchase_mode()
+    mode = mode_doc["mode"]
+
+    if mode == "XFEE":
+        priced = await _price_in_xfee_mode(xfee_amount)
+        return {
+            "payment_mode": "XFEE",
+            "xfee_amount": xfee_amount,
+            "token_cost_usd": priced["token_cost_usd"],
+            "xfee_price_usd": priced["xfee_price_usd"],
+            "xfee_expected_ui": priced["xfee_expected_ui"],
+            "xfee_expected_raw": priced["xfee_expected_raw"],
+            "xfee_decimals": priced["xfee_decimals"],
+            "xfee_mint": settings.xfee_payment_token_mint,
+            "sol_gas_buffer_sol": priced["sol_gas_buffer_sol"],
+        }
+
+    priced = await _price_in_sol_mode(xfee_amount, buyer_wallet="")
+    return {
+        "payment_mode": "SOL",
+        "xfee_amount": xfee_amount,
+        "token_cost_usd": priced["token_cost_usd"],
+        "gas_buffer_usd": priced["gas_buffer_usd"],
+        "total_usd": priced["token_cost_usd"] + priced["gas_buffer_usd"],
+        "sol_price_usd": round(priced["sol_price_usd"], 2),
+        "sol_needed": round(priced["sol_needed"], 6),
     }
 
 
@@ -77,44 +151,63 @@ async def initiate_purchase(req: PurchaseInitiateRequest):
             detail="You already have an active pending purchase. Wait for 15 mintues and try again.",
         )
 
-    sol_price = await get_sol_price()
-    # 1 XFEE = 1 USD (or 10 POWER)
-    token_cost_usd = float(req.xfee_amount)
-    purchase_value_sol = token_cost_usd / sol_price
-
-    if token_cost_usd < 26.0:
-        gas_buffer_usd = 0.20
-    else:
-        gas_buffer_usd = 2.0
-        try:
-            buyer_balance_lamports = await get_balance(req.wallet_address)
-            buyer_balance_sol = buyer_balance_lamports / 1e9
-            if buyer_balance_sol >= purchase_value_sol + (4.0 / sol_price):
-                gas_buffer_usd = round(random.uniform(2.0, 4.0), 2)
-        except Exception:
-            logger.warning(f"Could not read balance for {req.wallet_address}, using minimum gas buffer")
-
-    sol_needed = (token_cost_usd + gas_buffer_usd) / sol_price
+    mode_doc = await get_purchase_mode()
+    mode = mode_doc["mode"]
 
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=settings.purchase_wallet_expiry_minutes)
 
-    purchase_doc = {
-        "user_wallet": req.wallet_address,
-        "purchase_wallet_pubkey": "",
-        "xfee_amount": req.xfee_amount,
-        "sol_amount_expected": round(sol_needed, 6),
-        "purchase_value_sol": round(purchase_value_sol, 6),
-        "gas_buffer_usd": gas_buffer_usd,
-        "sol_amount_received": 0.0,
-        "sol_price_at_confirmation": 0.0,
-        "status": "pending",
-        "created_at": now,
-        "expires_at": expires_at,
-        "confirmed_at": None,
-        "token_dispatch_tx": None,
-        "commission_distributed": False,
-    }
+    if mode == "XFEE":
+        if not settings.xfee_payment_token_mint:
+            raise HTTPException(
+                status_code=500,
+                detail="XFEE mode is active but XFEE_PAYMENT_TOKEN_MINT is not configured",
+            )
+        priced = await _price_in_xfee_mode(req.xfee_amount)
+        sol_needed = priced["sol_gas_buffer_sol"]
+        purchase_doc = {
+            "user_wallet": req.wallet_address,
+            "purchase_wallet_pubkey": "",
+            "xfee_amount": req.xfee_amount,
+            "payment_mode": "XFEE",
+            "sol_amount_expected": round(sol_needed, 6),
+            "sol_amount_received": 0.0,
+            "sol_price_at_confirmation": 0.0,
+            "xfee_price_at_initiate": priced["xfee_price_usd"],
+            "xfee_price_at_confirmation": 0.0,
+            "xfee_amount_expected_raw": priced["xfee_expected_raw"],
+            "xfee_amount_expected_ui": priced["xfee_expected_ui"],
+            "xfee_amount_received_raw": 0,
+            "xfee_mint": settings.xfee_payment_token_mint,
+            "xfee_decimals": priced["xfee_decimals"],
+            "status": "pending",
+            "created_at": now,
+            "expires_at": expires_at,
+            "confirmed_at": None,
+            "token_dispatch_tx": None,
+            "commission_distributed": False,
+        }
+    else:
+        priced = await _price_in_sol_mode(req.xfee_amount, req.wallet_address)
+        sol_needed = priced["sol_needed"]
+        purchase_doc = {
+            "user_wallet": req.wallet_address,
+            "purchase_wallet_pubkey": "",
+            "xfee_amount": req.xfee_amount,
+            "payment_mode": "SOL",
+            "sol_amount_expected": round(sol_needed, 6),
+            "purchase_value_sol": round(priced["purchase_value_sol"], 6),
+            "gas_buffer_usd": priced["gas_buffer_usd"],
+            "sol_amount_received": 0.0,
+            "sol_price_at_confirmation": 0.0,
+            "status": "pending",
+            "created_at": now,
+            "expires_at": expires_at,
+            "confirmed_at": None,
+            "token_dispatch_tx": None,
+            "commission_distributed": False,
+        }
+
     result = await purchases_col().insert_one(purchase_doc)
     purchase_id = result.inserted_id
 
@@ -138,16 +231,59 @@ async def initiate_purchase(req: PurchaseInitiateRequest):
         )
     )
 
-    logger.info(
-        f"Purchase initiated: {req.xfee_amount} XFEE for {req.wallet_address}, "
-        f"wallet={wallet['public_key']}, sol_needed={sol_needed:.6f}"
-    )
+    if mode == "XFEE":
+        xfee_dest_ata = derive_ata(wallet["public_key"], settings.xfee_payment_token_mint)
+        logger.info(
+            "Purchase initiated [XFEE]: user=%s amount=%s XFEE (raw=%s), wallet=%s (ATA=%s), gas_sol=%.6f",
+            req.wallet_address, req.xfee_amount, priced["xfee_expected_raw"],
+            wallet["public_key"], xfee_dest_ata, sol_needed,
+        )
+        return PurchaseInitiateResponse(
+            purchase_id=str(purchase_id),
+            purchase_wallet=wallet["public_key"],
+            payment_mode="XFEE",
+            sol_expected=round(sol_needed, 6),
+            expires_at=expires_at,
+            xfee_expected_raw=priced["xfee_expected_raw"],
+            xfee_expected_ui=priced["xfee_expected_ui"],
+            xfee_mint=settings.xfee_payment_token_mint,
+            xfee_decimals=priced["xfee_decimals"],
+            xfee_price_at_initiate=priced["xfee_price_usd"],
+            xfee_destination_ata=xfee_dest_ata,
+        )
 
+    logger.info(
+        "Purchase initiated [SOL]: user=%s amount=%s XFEE, wallet=%s sol_needed=%.6f",
+        req.wallet_address, req.xfee_amount, wallet["public_key"], sol_needed,
+    )
     return PurchaseInitiateResponse(
         purchase_id=str(purchase_id),
         purchase_wallet=wallet["public_key"],
+        payment_mode="SOL",
         sol_expected=round(sol_needed, 6),
         expires_at=expires_at,
+    )
+
+
+def _purchase_response_from_doc(p: dict) -> PurchaseResponse:
+    return PurchaseResponse(
+        id=str(p["_id"]),
+        user_wallet=p["user_wallet"],
+        purchase_wallet_pubkey=p["purchase_wallet_pubkey"],
+        xfee_amount=p["xfee_amount"],
+        payment_mode=p.get("payment_mode", "SOL"),
+        sol_amount_expected=p["sol_amount_expected"],
+        sol_amount_received=p["sol_amount_received"],
+        sol_price_at_confirmation=p["sol_price_at_confirmation"],
+        xfee_amount_expected_raw=p.get("xfee_amount_expected_raw"),
+        xfee_amount_received_raw=p.get("xfee_amount_received_raw"),
+        xfee_price_at_confirmation=p.get("xfee_price_at_confirmation"),
+        status=p["status"],
+        created_at=p["created_at"],
+        expires_at=p["expires_at"],
+        confirmed_at=p.get("confirmed_at"),
+        token_dispatch_tx=p.get("token_dispatch_tx"),
+        commission_distributed=p.get("commission_distributed", False),
     )
 
 
@@ -162,21 +298,7 @@ async def get_purchase(purchase_id: str):
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
 
-    return PurchaseResponse(
-        id=str(purchase["_id"]),
-        user_wallet=purchase["user_wallet"],
-        purchase_wallet_pubkey=purchase["purchase_wallet_pubkey"],
-        xfee_amount=purchase["xfee_amount"],
-        sol_amount_expected=purchase["sol_amount_expected"],
-        sol_amount_received=purchase["sol_amount_received"],
-        sol_price_at_confirmation=purchase["sol_price_at_confirmation"],
-        status=purchase["status"],
-        created_at=purchase["created_at"],
-        expires_at=purchase["expires_at"],
-        confirmed_at=purchase.get("confirmed_at"),
-        token_dispatch_tx=purchase.get("token_dispatch_tx"),
-        commission_distributed=purchase.get("commission_distributed", False),
-    )
+    return _purchase_response_from_doc(purchase)
 
 
 @router.get("/user/{wallet_address}/purchases")
@@ -198,23 +320,7 @@ async def get_user_purchases(
 
     results = []
     async for p in cursor:
-        results.append(
-            PurchaseResponse(
-                id=str(p["_id"]),
-                user_wallet=p["user_wallet"],
-                purchase_wallet_pubkey=p["purchase_wallet_pubkey"],
-                xfee_amount=p["xfee_amount"],
-                sol_amount_expected=p["sol_amount_expected"],
-                sol_amount_received=p["sol_amount_received"],
-                sol_price_at_confirmation=p["sol_price_at_confirmation"],
-                status=p["status"],
-                created_at=p["created_at"],
-                expires_at=p["expires_at"],
-                confirmed_at=p.get("confirmed_at"),
-                token_dispatch_tx=p.get("token_dispatch_tx"),
-                commission_distributed=p.get("commission_distributed", False),
-            )
-        )
+        results.append(_purchase_response_from_doc(p))
 
     total = await purchases_col().count_documents({"user_wallet": wallet_address})
 

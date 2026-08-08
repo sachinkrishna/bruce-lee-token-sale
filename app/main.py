@@ -83,6 +83,15 @@ async def lifespan(app: FastAPI):
 
     await _migrate_ladder_to_15_tier()
 
+    # Bifurcated (SOL / XFEE) global pool: backfill legacy points into the SOL
+    # bucket. Idempotent — a marker doc prevents re-application on redeploys.
+    try:
+        from app.services.global_pool import ensure_pool_points_bucket_backfill
+
+        await ensure_pool_points_bucket_backfill()
+    except Exception:
+        logger.exception("Pool-points bucket backfill failed (non-fatal, will retry next start)")
+
     await ensure_wallet_pool()
     logger.info("Purchase wallet pool checked")
 
@@ -437,7 +446,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import admin, burns, global_pool, purchases, stats, users
+from app.routers import admin, burns, global_pool, purchase_mode, purchases, stats, users
 
 app.include_router(users.router)
 app.include_router(purchases.router)
@@ -447,6 +456,8 @@ app.include_router(burns.router)
 app.include_router(admin.router)
 app.include_router(admin.public_admin_router)
 app.include_router(global_pool.admin_router)
+app.include_router(purchase_mode.public_router)
+app.include_router(purchase_mode.admin_router)
 
 if settings.test_mode:
     from app.routers import test

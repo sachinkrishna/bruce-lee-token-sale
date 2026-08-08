@@ -10,6 +10,13 @@ from solders.message import Message
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
+from spl.token.constants import TOKEN_PROGRAM_ID
+from spl.token.instructions import (
+    TransferCheckedParams,
+    create_idempotent_associated_token_account,
+    get_associated_token_address,
+    transfer_checked,
+)
 
 from app.config import settings
 
@@ -22,6 +29,10 @@ _test_balances: dict = {}
 
 # In-memory memo ledger for test mode: memo -> signature
 _test_memos: dict = {}
+
+# In-memory SPL balance ledger for test mode:
+# (owner_pubkey, mint_pubkey) -> raw_amount
+_test_spl_balances: dict = {}
 
 # SPL Memo Program v2 (the standard memo program)
 MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
@@ -247,3 +258,210 @@ async def get_token_account_balance(token_account: str) -> float:
 
     result = await rpc_request("getTokenAccountBalance", [token_account])
     return float(result["value"]["uiAmount"] or 0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPL Token helpers (used by XFEE-mode purchases + XFEE-side pool settlement)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def derive_ata(owner_pubkey: str, mint_pubkey: str) -> str:
+    """Compute the Associated Token Account address for an (owner, mint) pair."""
+    return str(
+        get_associated_token_address(
+            Pubkey.from_string(owner_pubkey),
+            Pubkey.from_string(mint_pubkey),
+        )
+    )
+
+
+def test_set_spl_balance(owner_pubkey: str, mint_pubkey: str, raw_amount: int) -> None:
+    _test_spl_balances[(owner_pubkey, mint_pubkey)] = raw_amount
+    logger.info(
+        "[TEST] Set SPL balance for owner=%s mint=%s: %s raw",
+        owner_pubkey, mint_pubkey, raw_amount,
+    )
+
+
+async def get_spl_balance_raw(owner_pubkey: str, mint_pubkey: str) -> int:
+    """Return the raw (integer, lamport-equivalent) SPL balance for owner+mint.
+
+    Returns 0 when the ATA does not exist yet — matches the "account not found"
+    case reported by getTokenAccountBalance.
+    """
+    if settings.test_mode:
+        return int(_test_spl_balances.get((owner_pubkey, mint_pubkey), 0))
+
+    ata = derive_ata(owner_pubkey, mint_pubkey)
+    try:
+        result = await rpc_request("getTokenAccountBalance", [ata])
+        amount = result["value"].get("amount")
+        return int(amount or 0)
+    except Exception as exc:
+        # Missing / uninitialized ATA is common — surface as zero.
+        msg = str(exc)
+        if "could not find account" in msg.lower() or "invalid param" in msg.lower():
+            return 0
+        raise
+
+
+async def get_spl_balance_stable(
+    owner_pubkey: str,
+    mint_pubkey: str,
+    *,
+    attempts: int = 8,
+    delay_s: float = 1.25,
+    tolerance: int = 0,
+) -> int:
+    """Poll SPL balance until two consecutive reads agree.
+
+    Mirrors `get_balance_stable` for SOL — protects against RPC load-balancer
+    lag right after a transfer confirms.
+    """
+    import asyncio
+
+    prev = await get_spl_balance_raw(owner_pubkey, mint_pubkey)
+    for _ in range(attempts - 1):
+        await asyncio.sleep(delay_s)
+        cur = await get_spl_balance_raw(owner_pubkey, mint_pubkey)
+        if abs(cur - prev) <= tolerance:
+            return cur
+        prev = cur
+    return prev
+
+
+async def _send_signed_tx(tx: Transaction) -> str:
+    import base64
+
+    encoded = base64.b64encode(bytes(tx)).decode("utf-8")
+    result = await rpc_request(
+        "sendTransaction",
+        [encoded, {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "confirmed"}],
+    )
+    return result
+
+
+async def transfer_spl_token(
+    from_keypair: Keypair,
+    to_owner_pubkey: Pubkey,
+    mint_pubkey: Pubkey,
+    amount_raw: int,
+    decimals: int,
+    *,
+    fee_payer_keypair: Optional[Keypair] = None,
+    memo: Optional[str] = None,
+) -> str:
+    """Transfer an SPL token from `from_keypair`'s ATA to `to_owner_pubkey`'s ATA.
+
+    - Always prepends an idempotent `CreateAssociatedTokenAccount` for the
+      recipient so the transfer succeeds even if the recipient has never held
+      this token before.
+    - `fee_payer_keypair` (optional): when provided, this keypair pays SOL fees
+      AND rent for the ATA creation. When `None`, the sender pays both. Useful
+      for commission dispatch: buyer's ephemeral wallet is the SPL sender, but
+      master pays the ATA rent so we don't blow through the buyer's gas buffer.
+    - `memo` (optional): attaches an SPL memo instruction — needed for the
+      global-pool XFEE-side settlement idempotency scan.
+    """
+    if settings.test_mode:
+        from_owner = str(from_keypair.pubkey())
+        to_owner = str(to_owner_pubkey)
+        mint_str = str(mint_pubkey)
+        current = _test_spl_balances.get((from_owner, mint_str), 0)
+        _test_spl_balances[(from_owner, mint_str)] = max(0, current - amount_raw)
+        _test_spl_balances[(to_owner, mint_str)] = (
+            _test_spl_balances.get((to_owner, mint_str), 0) + amount_raw
+        )
+        sig = f"test_spl_{uuid.uuid4().hex[:16]}"
+        if memo:
+            _test_memos[memo] = sig
+        logger.info(
+            "[TEST] SPL transfer %s raw mint=%s: %s.. -> %s.. tx=%s (memo=%s)",
+            amount_raw, mint_str[:8], from_owner[:8], to_owner[:8], sig, memo,
+        )
+        return sig
+
+    fee_payer_kp = fee_payer_keypair or from_keypair
+    fee_payer = fee_payer_kp.pubkey()
+    sender = from_keypair.pubkey()
+
+    source_ata = get_associated_token_address(sender, mint_pubkey)
+    dest_ata = get_associated_token_address(to_owner_pubkey, mint_pubkey)
+
+    ixs: list[Instruction] = []
+    if memo:
+        ixs.append(
+            Instruction(
+                program_id=MEMO_PROGRAM_ID,
+                accounts=[],
+                data=memo.encode("utf-8"),
+            )
+        )
+    ixs.append(
+        create_idempotent_associated_token_account(
+            payer=fee_payer,
+            owner=to_owner_pubkey,
+            mint=mint_pubkey,
+        )
+    )
+    ixs.append(
+        transfer_checked(
+            TransferCheckedParams(
+                program_id=TOKEN_PROGRAM_ID,
+                source=source_ata,
+                mint=mint_pubkey,
+                dest=dest_ata,
+                owner=sender,
+                amount=amount_raw,
+                decimals=decimals,
+                signers=[],
+            )
+        )
+    )
+
+    blockhash_str = await get_latest_blockhash()
+    blockhash = Hash.from_string(blockhash_str)
+    msg = Message.new_with_blockhash(ixs, fee_payer, blockhash)
+    tx = Transaction.new_unsigned(msg)
+
+    # Sign with both keypairs when fee_payer != sender. `Transaction.sign` de-dups.
+    signers = [fee_payer_kp]
+    if bytes(fee_payer_kp) != bytes(from_keypair):
+        signers.append(from_keypair)
+    tx.sign(signers, blockhash)
+
+    sig = await _send_signed_tx(tx)
+    logger.info(
+        "SPL transfer tx: %s (amount=%s raw, mint=%s, memo=%s)",
+        sig, amount_raw, str(mint_pubkey)[:8], memo,
+    )
+    return sig
+
+
+async def find_spl_signature_by_memo(
+    owner_pubkey: str,
+    memo: str,
+    *,
+    limit: int = 1000,
+) -> Optional[str]:
+    """Scan recent signatures of an owner wallet for one whose memo contains `memo`.
+
+    Because the SPL memo appears on the wrapping transaction — regardless of
+    whether it carried a SOL transfer or an SPL transfer — the same helper
+    covers both currencies. We scan the owner wallet (not the ATA) because
+    `getSignaturesForAddress` on the owner reliably returns transactions that
+    include SPL transfers signed by that owner.
+    """
+    if settings.test_mode:
+        return _test_memos.get(memo)
+
+    page_limit = min(limit, 1000)
+    result = await rpc_request(
+        "getSignaturesForAddress",
+        [owner_pubkey, {"limit": page_limit}],
+    )
+    for entry in result or []:
+        entry_memo = entry.get("memo") or ""
+        if memo in entry_memo and entry.get("err") is None:
+            return entry.get("signature")
+    return None

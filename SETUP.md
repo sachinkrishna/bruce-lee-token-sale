@@ -220,7 +220,48 @@ Only relevant if this deployment publishes token-burn stats via `/api/v1/burn/*`
 | `BURN_TOKEN_BUY_WALLET` | empty | Wallet whose burns are aggregated as "token_buy" burns. |
 | `BURN_FEE_WALLET` | empty | Wallet whose burns are aggregated as "fee" burns. |
 
-### 6.9 Test mode
+### 6.9 Multi-currency purchase mode
+
+Runtime toggle between SOL-mode and XFEE-mode purchases. Only one mode is
+active at a time; toggling affects new `/purchase/initiate` calls only.
+In-flight purchases keep their initiated mode.
+
+| Var | Default | Purpose |
+|---|---|---|
+| `DEFAULT_PURCHASE_MODE` | `SOL` | Initial mode on a fresh deployment. After first boot the mode is stored in `system_meta` and updated via the admin API. |
+| `XFEE_PAYMENT_TOKEN_MINT` | empty | SPL mint used as payment when mode is `XFEE`. Required if you plan to enable XFEE mode. |
+| `XFEE_PAYMENT_TOKEN_DECIMALS` | `9` | Decimals of that mint. |
+| `XFEE_PRICE_ORACLE_URL` | empty | GET URL returning JSON with the token's USD price. |
+| `XFEE_PRICE_ORACLE_JSON_PATH` | `data.price` | Dotted path into the JSON response body pointing at the price field. |
+| `XFEE_PRICE_CACHE_TTL_SECONDS` | `30` | In-process cache TTL for the price. |
+| `XFEE_MODE_SOL_GAS_BUFFER_SOL` | `0.02` | Small SOL amount the buyer must include on the ephemeral wallet alongside their XFEE payment so the backend can afford commission + sweep tx fees. |
+| `XFEE_MODE_RECEIVE_TOLERANCE` | `0.95` | Fraction of the quoted XFEE amount that counts as "received" (allows a small tolerance for wallet slippage). |
+
+Toggling the mode:
+
+```bash
+# Read current mode (public)
+curl https://<host>/api/v1/purchase-mode
+
+# Flip to XFEE
+curl -X POST https://<host>/api/v1/admin/purchase-mode \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"XFEE","reason":"launching XFEE-only sale"}'
+
+# Recent change history (admin)
+curl https://<host>/api/v1/admin/purchase-mode/history \
+  -H "X-Admin-Key: $ADMIN_API_KEY"
+```
+
+Master wallet requirements when XFEE mode is enabled:
+
+- Must have an XFEE ATA (created automatically on the first commission or
+  sweep tx; you can also pre-create it with `spl-token create-account`).
+- Must hold enough SOL to pay ATA-creation rent for ancestors that don't yet
+  have an XFEE ATA (~0.002 SOL per new recipient per purchase).
+
+### 6.10 Test mode
 
 | Var | Default | Purpose |
 |---|---|---|

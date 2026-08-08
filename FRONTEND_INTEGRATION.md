@@ -138,7 +138,8 @@ So even though A is in C's tree, they receive 0 SOL on this purchase because B a
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/purchase/estimate?xfee_amount=N` | Compute SOL needed without creating a purchase |
+| GET | `/api/v1/purchase-mode` | Read the currently active purchase mode (`SOL` or `XFEE`) |
+| GET | `/api/v1/purchase/estimate?xfee_amount=N` | Compute what the buyer needs to send (mode-aware) |
 | POST | `/api/v1/purchase/initiate` | Start a purchase, get ephemeral receive wallet |
 | GET | `/api/v1/purchase/{id}` | Poll for status until `completed` / `expired` / `failed` |
 
@@ -245,10 +246,27 @@ Skip admin endpoints in the customer-facing build unless you're also shipping an
 
 When the sale is unlimited (production default), `tokens_remaining` and `total_supply` are both `null`. Display "Tokens sold: 12,400" and skip any "remaining"/progress-bar UI in that case.
 
-### 7.4 `GET /api/v1/purchase/estimate?xfee_amount=N`
+### 7.4 `GET /api/v1/purchase-mode`
+
+Public read of the currently active purchase mode. Refresh this on page load and before every checkout — an operator may flip the mode at any time.
 
 ```json
 {
+  "mode": "SOL",
+  "updated_at": "2026-08-08T21:15:00Z",
+  "valid_modes": ["SOL", "XFEE"]
+}
+```
+
+### 7.5 `GET /api/v1/purchase/estimate?xfee_amount=N`
+
+Returns a mode-aware quote. Always includes `payment_mode` in the response so the frontend can render the right instructions without a separate `/purchase-mode` call.
+
+**SOL mode** (buyer sends SOL):
+
+```json
+{
+  "payment_mode": "SOL",
   "xfee_amount": 100,
   "token_cost_usd": 100.0,
   "gas_buffer_usd": 2.45,
@@ -258,36 +276,87 @@ When the sale is unlimited (production default), `tokens_remaining` and `total_s
 }
 ```
 
-Use this to pre-display the SOL cost before the user commits. The gas buffer is small and intentionally varied. `sol_needed` is the exact figure to forward into `purchase/initiate`. The same calculation runs server-side on `initiate`, so the final figure may differ by a few cents if the SOL price moves between the two calls.
+`sol_needed` is the exact figure to forward into `purchase/initiate`. The same calculation runs server-side on `initiate`, so the final figure may differ by a few cents if the SOL price moves between the two calls.
 
-### 7.5 `POST /api/v1/purchase/initiate`
+**XFEE mode** (buyer sends XFEE + a small SOL gas buffer to the same ephemeral wallet):
+
+```json
+{
+  "payment_mode": "XFEE",
+  "xfee_amount": 100,
+  "token_cost_usd": 100.0,
+  "xfee_price_usd": 5.05,
+  "xfee_expected_ui": 19.8019802,
+  "xfee_expected_raw": 19801980200,
+  "xfee_decimals": 9,
+  "xfee_mint": "96egraTCizRpzNx4WvMMhPJf7TKS7W5kUHeenmd1XfuN",
+  "sol_gas_buffer_sol": 0.02
+}
+```
+
+- `xfee_expected_ui` is what to display to the user ("Send 19.80 XFEE").
+- `xfee_expected_raw` is the exact integer amount at the mint's decimals — useful if you build the transfer transaction yourself.
+- `sol_gas_buffer_sol` is the SOL the buyer must include on the same ephemeral wallet (typically ~$0.02–0.05 of SOL depending on operator config).
+
+### 7.6 `POST /api/v1/purchase/initiate`
 
 ```json
 // Request
 { "wallet_address": "BuyerPublicKey…", "xfee_amount": 100 }
 ```
 
+The response carries the mode snapshot as of when the purchase was created — even if the operator flips the mode later, this in-flight purchase keeps its original terms.
+
+**SOL-mode response:**
+
 ```json
-// 200 Success
 {
   "purchase_id": "6a3a5ebda3c6077001d1673d",
   "purchase_wallet": "G6QcpHmgFMXcmxRHN2ExMVBgf6xdNCxwvmJ2iiwomQ13",
+  "payment_mode": "SOL",
   "sol_expected": 1.483,
   "expires_at": "2026-06-23T22:15:00Z"
 }
 ```
 
+**XFEE-mode response:**
+
+```json
+{
+  "purchase_id": "6a3a5ebda3c6077001d1673d",
+  "purchase_wallet": "G6QcpHmgFMXcmxRHN2ExMVBgf6xdNCxwvmJ2iiwomQ13",
+  "payment_mode": "XFEE",
+  "sol_expected": 0.02,
+  "expires_at": "2026-06-23T22:15:00Z",
+  "xfee_expected_raw": 19801980200,
+  "xfee_expected_ui": 19.8019802,
+  "xfee_mint": "96egraTCizRpzNx4WvMMhPJf7TKS7W5kUHeenmd1XfuN",
+  "xfee_decimals": 9,
+  "xfee_price_at_initiate": 5.05,
+  "xfee_destination_ata": "GNbEDx7…"
+}
+```
+
+In XFEE mode the buyer must complete **two transfers to the same `purchase_wallet` address**, in either order, within 15 minutes:
+
+1. `sol_expected` SOL — pays the tx fees for the backend's downstream commission + sweep transactions.
+2. `xfee_expected_ui` XFEE — the actual payment. Any modern wallet (Phantom, Solflare) will derive the ATA automatically when sending an SPL token to `purchase_wallet`; if your wallet library requires a raw ATA target, use `xfee_destination_ata`.
+
+The poller waits until BOTH balances are on the ephemeral wallet before triggering completion. Sending only one of the two will leave the purchase in `pending` until expiry.
+
 | Status | Body | Frontend action |
 |---|---|---|
-| 200 | — | Send `sol_expected` SOL to `purchase_wallet` |
+| 200 | — | Show the right instructions for `payment_mode` |
 | 400 | `xfee_amount must be positive` | Validation |
 | 404 | `User not registered` | Send user to registration first |
 | 409 | `You already have an active pending purchase…` | The user has an unfinished purchase; surface its `purchase_id` (fetch `/user/{wallet}/purchases?page=1&limit=1`) and let them either complete it or wait 15 min for expiry |
+| 500 | `XFEE mode is active but XFEE_PAYMENT_TOKEN_MINT is not configured` | Deployment misconfig — operator issue |
+| 502 | `XFEE price unavailable from oracle` | Oracle down — retry, or fall back to a warning ("prices refreshing") |
 | 503 | `No purchase wallets available, try again shortly` | Backend pool is replenishing; auto-retry in 3–5s |
 
 **Important:** `purchase_wallet` is a one-time ephemeral wallet that the server pre-generated and locked specifically for this purchase. **Do not reuse the same purchase_wallet across multiple purchases.** It's discarded after 15 minutes.
 
-### 7.6 Send SOL from the user's wallet
+### 7.7 Send SOL from the user's wallet (SOL mode)
 
 Use Phantom (or any Solana wallet adapter) to transfer exactly `sol_expected` SOL to `purchase_wallet`:
 
@@ -331,7 +400,69 @@ async function payForPurchase(
 
 It's safe to send slightly more than `sol_expected` (e.g., to round up to a clean number). The backend only needs at least `sol_expected`; any overage stays in the system. **Don't send less** — the backend will treat the purchase as expired if the funds never arrive in full within 15 min.
 
-### 7.7 `GET /api/v1/purchase/{purchase_id}` — poll until done
+### 7.7b Send XFEE + SOL from the user's wallet (XFEE mode)
+
+In XFEE mode the buyer sends TWO transfers to the same `purchase_wallet`. Order doesn't matter; both must arrive within 15 minutes.
+
+```typescript
+import {
+  Connection,
+  PublicKey,
+  Transaction,
+  SystemProgram,
+  LAMPORTS_PER_SOL,
+} from "@solana/web3.js";
+import {
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createTransferCheckedInstruction,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+
+async function payForPurchaseXfee(
+  wallet: SolanaWalletAdapter,
+  purchaseWallet: string,     // response.purchase_wallet
+  solExpected: number,        // response.sol_expected  (small gas amount)
+  xfeeExpectedRaw: bigint,    // response.xfee_expected_raw (as BigInt)
+  xfeeMint: string,           // response.xfee_mint
+  xfeeDecimals: number,       // response.xfee_decimals
+) {
+  const recipient = new PublicKey(purchaseWallet);
+  const mint = new PublicKey(xfeeMint);
+
+  const buyerAta = await getAssociatedTokenAddress(mint, wallet.publicKey!);
+  const recipientAta = await getAssociatedTokenAddress(mint, recipient);
+
+  const tx = new Transaction();
+  // 1. Gas buffer (SOL) — required so the backend can pay tx fees.
+  tx.add(SystemProgram.transfer({
+    fromPubkey: wallet.publicKey!,
+    toPubkey: recipient,
+    lamports: Math.ceil(solExpected * LAMPORTS_PER_SOL),
+  }));
+  // 2. Ensure the ephemeral wallet has an ATA (idempotent — no-op if already there).
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(
+    wallet.publicKey!, recipientAta, recipient, mint,
+  ));
+  // 3. Send the XFEE payment.
+  tx.add(createTransferCheckedInstruction(
+    buyerAta, mint, recipientAta, wallet.publicKey!,
+    xfeeExpectedRaw, xfeeDecimals,
+  ));
+
+  const { blockhash } = await connection.getLatestBlockhash("finalized");
+  tx.recentBlockhash = blockhash;
+  tx.feePayer = wallet.publicKey!;
+
+  const signature = await wallet.sendTransaction(tx, connection);
+  await connection.confirmTransaction(signature, "confirmed");
+  return signature;
+}
+```
+
+You can also split this into two separate transactions if it makes UX simpler — the poller only checks final balances.
+
+### 7.8 `GET /api/v1/purchase/{purchase_id}` — poll until done
 
 Poll this every 5 seconds:
 
@@ -341,9 +472,13 @@ Poll this every 5 seconds:
   "user_wallet": "BuyerPublicKey…",
   "purchase_wallet_pubkey": "G6QcpHmg…",
   "xfee_amount": 100,
+  "payment_mode": "SOL",
   "sol_amount_expected": 1.483,
   "sol_amount_received": 1.483,
   "sol_price_at_confirmation": 69.07,
+  "xfee_amount_expected_raw": null,
+  "xfee_amount_received_raw": null,
+  "xfee_price_at_confirmation": null,
   "status": "completed",
   "created_at": "2026-06-23T10:00:00Z",
   "expires_at": "2026-06-23T10:15:00Z",
@@ -352,6 +487,8 @@ Poll this every 5 seconds:
   "commission_distributed": true
 }
 ```
+
+In XFEE mode the response includes populated `xfee_amount_expected_raw`, `xfee_amount_received_raw`, and `xfee_price_at_confirmation` fields; `sol_amount_received` reflects only the small gas buffer.
 
 #### `status` values
 

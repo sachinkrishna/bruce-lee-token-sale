@@ -17,9 +17,11 @@ from app.services.global_pool import (
     process_due_pools,
     settle_pool,
     sum_master_commissions_in_window,
+    sum_master_commissions_xfee_in_window,
 )
 from app.services.sol_price import get_sol_price
-from app.services.solana_rpc import get_balance
+from app.services.solana_rpc import get_balance, get_spl_balance_raw
+from app.services.xfee_price import get_xfee_price
 
 
 def _jsonable(value: Any) -> Any:
@@ -93,7 +95,42 @@ async def global_pool_funds():
     available_lamports = int(available_sol * 1e9)
     available_usd = available_sol * sol_price
 
+    # XFEE side (best-effort — degrades gracefully if unset).
+    xfee_mint = settings.xfee_payment_token_mint
+    decimals = int(settings.xfee_payment_token_decimals or 9)
+    xfee_balance_raw = 0
+    xfee_price_usd = 0.0
+    if xfee_mint:
+        try:
+            xfee_balance_raw = await get_spl_balance_raw(funding_wallet, xfee_mint)
+        except Exception:
+            xfee_balance_raw = 0
+        try:
+            xfee_price_usd = await get_xfee_price()
+        except Exception:
+            xfee_price_usd = 0.0
+    xfee_balance_ui = xfee_balance_raw / (10 ** decimals)
+    xfee_balance_usd = xfee_balance_ui * xfee_price_usd
+
     pool = await get_current_pool()
+    base_response = {
+        "funding_wallet": funding_wallet,
+        "funding_wallet_balance_lamports": balance_lamports,
+        "funding_wallet_balance_sol": balance_sol,
+        "funding_wallet_balance_usd": balance_usd,
+        "funding_wallet_balance_xfee_raw": xfee_balance_raw,
+        "funding_wallet_balance_xfee_ui": xfee_balance_ui,
+        "funding_wallet_balance_xfee_usd": xfee_balance_usd,
+        "funding_buffer_sol": buffer_sol,
+        "available_for_settlement_lamports": available_lamports,
+        "available_for_settlement_sol": available_sol,
+        "available_for_settlement_usd": available_usd,
+        "sol_price_usd": sol_price,
+        "xfee_price_usd": xfee_price_usd,
+        "xfee_mint": xfee_mint,
+        "xfee_decimals": decimals,
+    }
+
     if pool is None:
         return {
             "active": False,
@@ -104,17 +141,13 @@ async def global_pool_funds():
             "pool_collected_lamports": 0,
             "pool_collected_sol": 0.0,
             "pool_collected_usd": 0.0,
+            "pool_collected_xfee_raw": 0,
+            "pool_collected_xfee_ui": 0.0,
             "pool_points_usd": 0.0,
+            "pool_points_usd_sol": 0.0,
+            "pool_points_usd_xfee": 0.0,
             "pool_user_count": 0,
-            "funding_wallet": funding_wallet,
-            "funding_wallet_balance_lamports": balance_lamports,
-            "funding_wallet_balance_sol": balance_sol,
-            "funding_wallet_balance_usd": balance_usd,
-            "funding_buffer_sol": buffer_sol,
-            "available_for_settlement_lamports": available_lamports,
-            "available_for_settlement_sol": available_sol,
-            "available_for_settlement_usd": available_usd,
-            "sol_price_usd": sol_price,
+            **base_response,
         }
 
     start_at = pool["start_at"]
@@ -123,7 +156,11 @@ async def global_pool_funds():
     pool_collected_sol = await sum_master_commissions_in_window(start_at, end_at)
     pool_collected_lamports = int(pool_collected_sol * 1e9)
     pool_collected_usd = pool_collected_sol * sol_price
+    pool_collected_xfee_raw = await sum_master_commissions_xfee_in_window(start_at, end_at)
+    pool_collected_xfee_ui = pool_collected_xfee_raw / (10 ** decimals)
     pool_points_usd = float(pool.get("total_points_usd", 0.0) or 0.0)
+    pool_points_usd_sol = float(pool.get("total_points_usd_sol", 0.0) or 0.0)
+    pool_points_usd_xfee = float(pool.get("total_points_usd_xfee", 0.0) or 0.0)
     pool_user_count = await get_pool_user_count(pool_index)
 
     return {
@@ -135,17 +172,13 @@ async def global_pool_funds():
         "pool_collected_lamports": pool_collected_lamports,
         "pool_collected_sol": pool_collected_sol,
         "pool_collected_usd": pool_collected_usd,
+        "pool_collected_xfee_raw": pool_collected_xfee_raw,
+        "pool_collected_xfee_ui": pool_collected_xfee_ui,
         "pool_points_usd": pool_points_usd,
+        "pool_points_usd_sol": pool_points_usd_sol,
+        "pool_points_usd_xfee": pool_points_usd_xfee,
         "pool_user_count": pool_user_count,
-        "funding_wallet": funding_wallet,
-        "funding_wallet_balance_lamports": balance_lamports,
-        "funding_wallet_balance_sol": balance_sol,
-        "funding_wallet_balance_usd": balance_usd,
-        "funding_buffer_sol": buffer_sol,
-        "available_for_settlement_lamports": available_lamports,
-        "available_for_settlement_sol": available_sol,
-        "available_for_settlement_usd": available_usd,
-        "sol_price_usd": sol_price,
+        **base_response,
     }
 
 
