@@ -151,6 +151,26 @@ async def initiate_purchase(req: PurchaseInitiateRequest):
     )
 
 
+def _purchase_response_from_doc(p: dict) -> PurchaseResponse:
+    return PurchaseResponse(
+        id=str(p["_id"]),
+        user_wallet=p["user_wallet"],
+        purchase_wallet_pubkey=p["purchase_wallet_pubkey"],
+        xfee_amount=p["xfee_amount"],
+        sol_amount_expected=p["sol_amount_expected"],
+        sol_amount_received=p["sol_amount_received"],
+        sol_price_at_confirmation=p["sol_price_at_confirmation"],
+        status=p["status"],
+        created_at=p["created_at"],
+        expires_at=p["expires_at"],
+        confirmed_at=p.get("confirmed_at"),
+        token_dispatch_tx=p.get("token_dispatch_tx"),
+        commission_distributed=p.get("commission_distributed", False),
+        founder_eligible=bool(p.get("founder_eligible", False)),
+        founder_eligible_at=p.get("founder_eligible_at"),
+    )
+
+
 @router.get("/purchase/{purchase_id}", response_model=PurchaseResponse)
 async def get_purchase(purchase_id: str):
     try:
@@ -162,21 +182,7 @@ async def get_purchase(purchase_id: str):
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
 
-    return PurchaseResponse(
-        id=str(purchase["_id"]),
-        user_wallet=purchase["user_wallet"],
-        purchase_wallet_pubkey=purchase["purchase_wallet_pubkey"],
-        xfee_amount=purchase["xfee_amount"],
-        sol_amount_expected=purchase["sol_amount_expected"],
-        sol_amount_received=purchase["sol_amount_received"],
-        sol_price_at_confirmation=purchase["sol_price_at_confirmation"],
-        status=purchase["status"],
-        created_at=purchase["created_at"],
-        expires_at=purchase["expires_at"],
-        confirmed_at=purchase.get("confirmed_at"),
-        token_dispatch_tx=purchase.get("token_dispatch_tx"),
-        commission_distributed=purchase.get("commission_distributed", False),
-    )
+    return _purchase_response_from_doc(purchase)
 
 
 @router.get("/user/{wallet_address}/purchases")
@@ -198,23 +204,7 @@ async def get_user_purchases(
 
     results = []
     async for p in cursor:
-        results.append(
-            PurchaseResponse(
-                id=str(p["_id"]),
-                user_wallet=p["user_wallet"],
-                purchase_wallet_pubkey=p["purchase_wallet_pubkey"],
-                xfee_amount=p["xfee_amount"],
-                sol_amount_expected=p["sol_amount_expected"],
-                sol_amount_received=p["sol_amount_received"],
-                sol_price_at_confirmation=p["sol_price_at_confirmation"],
-                status=p["status"],
-                created_at=p["created_at"],
-                expires_at=p["expires_at"],
-                confirmed_at=p.get("confirmed_at"),
-                token_dispatch_tx=p.get("token_dispatch_tx"),
-                commission_distributed=p.get("commission_distributed", False),
-            )
-        )
+        results.append(_purchase_response_from_doc(p))
 
     total = await purchases_col().count_documents({"user_wallet": wallet_address})
 

@@ -26,6 +26,14 @@ async def ensure_indexes() -> None:
     await db.purchase_wallets.create_index("status")
     await db.purchases.create_index("status")
     await db.purchases.create_index("user_wallet")
+    await db.purchases.create_index(
+        [("founder_eligible", 1), ("confirmed_at", 1)],
+        partialFilterExpression={"founder_eligible": True},
+    )
+    await db.users.create_index(
+        [("founder", 1), ("founder_since", 1)],
+        partialFilterExpression={"founder": True},
+    )
     await db.allocs.create_index("recipient_wallet")
     await db.allocs.create_index("purchase_id")
     await db.allocs.create_index([("recipient_wallet", 1), ("indexed", 1)])

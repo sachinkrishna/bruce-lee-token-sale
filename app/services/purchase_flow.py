@@ -328,7 +328,17 @@ async def process_completed_purchase(
         {"$set": {"is_valid_referrer": True}},
     )
 
-    # 10. Top up wallet pool if needed
+    # 10. Founder-eligibility check (idempotent, cap-gated)
+    try:
+        from app.services.founder import maybe_mark_founder_eligible
+
+        fresh = await purchases_col().find_one({"_id": pid})
+        if fresh is not None:
+            await maybe_mark_founder_eligible(fresh)
+    except Exception:
+        logger.exception(f"Founder eligibility check failed for purchase {purchase_id}")
+
+    # 11. Top up wallet pool if needed
     await ensure_wallet_pool()
 
     logger.info(f"Purchase {purchase_id} fully processed")

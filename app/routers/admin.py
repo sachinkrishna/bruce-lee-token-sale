@@ -1523,3 +1523,162 @@ async def backfill_wallet_balances():
 
     logger.info(f"Wallet balance backfill: {updated} updated, {failed} failed")
     return {"success": True, "wallets_updated": updated, "wallets_failed": failed}
+
+
+@router.get("/founders")
+async def list_founders(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    sort: str = Query(
+        "founder_since_asc",
+        description=(
+            "Sort order: 'founder_since_asc' (earliest founders first, default), "
+            "'founder_since_desc', 'total_usd_desc' (largest founder-eligible USD first)."
+        ),
+    ),
+):
+    """Paginated list of founder users with their founder-eligible purchase totals."""
+    query = {"founder": True}
+    total = await users_col().count_documents(query)
+
+    skip = (page - 1) * limit
+
+    if sort == "total_usd_desc":
+        pipeline = [
+            {"$match": query},
+            {
+                "$lookup": {
+                    "from": "purchases",
+                    "let": {"w": "$wallet_address"},
+                    "pipeline": [
+                        {
+                            "$match": {
+                                "$expr": {
+                                    "$and": [
+                                        {"$eq": ["$user_wallet", "$$w"]},
+                                        {"$eq": ["$founder_eligible", True]},
+                                    ]
+                                }
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": None,
+                                "total": {"$sum": {"$ifNull": ["$xfee_amount", 0]}},
+                                "count": {"$sum": 1},
+                            }
+                        },
+                    ],
+                    "as": "founder_totals",
+                }
+            },
+            {
+                "$addFields": {
+                    "total_founder_usd": {
+                        "$ifNull": [{"$arrayElemAt": ["$founder_totals.total", 0]}, 0]
+                    },
+                    "founder_purchase_count": {
+                        "$ifNull": [{"$arrayElemAt": ["$founder_totals.count", 0]}, 0]
+                    },
+                }
+            },
+            {"$sort": {"total_founder_usd": -1, "founder_since": 1}},
+            {"$skip": skip},
+            {"$limit": limit},
+            {
+                "$project": {
+                    "_id": 0,
+                    "wallet_address": 1,
+                    "founder_since": 1,
+                    "level": 1,
+                    "self_purchase": 1,
+                    "total_founder_usd": 1,
+                    "founder_purchase_count": 1,
+                }
+            },
+        ]
+        items: list[dict] = []
+        async for doc in users_col().aggregate(pipeline):
+            items.append(
+                {
+                    "wallet_address": doc.get("wallet_address"),
+                    "founder_since": doc.get("founder_since"),
+                    "level": doc.get("level", 1),
+                    "self_purchase_usd": float(doc.get("self_purchase", 0.0)),
+                    "total_founder_usd": float(doc.get("total_founder_usd", 0.0)),
+                    "founder_purchase_count": int(doc.get("founder_purchase_count", 0)),
+                }
+            )
+        return {"items": items, "total": total, "page": page, "limit": limit, "sort": sort}
+
+    order = 1 if sort == "founder_since_asc" else -1
+    cursor = (
+        users_col()
+        .find(
+            query,
+            {
+                "_id": 0,
+                "wallet_address": 1,
+                "founder_since": 1,
+                "level": 1,
+                "self_purchase": 1,
+            },
+        )
+        .sort("founder_since", order)
+        .skip(skip)
+        .limit(limit)
+    )
+    items = []
+    async for u in cursor:
+        wallet = u.get("wallet_address")
+        agg = purchases_col().aggregate(
+            [
+                {
+                    "$match": {
+                        "user_wallet": wallet,
+                        "founder_eligible": True,
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": None,
+                        "total": {"$sum": {"$ifNull": ["$xfee_amount", 0]}},
+                        "count": {"$sum": 1},
+                    }
+                },
+            ]
+        )
+        total_usd = 0.0
+        purchase_count = 0
+        async for doc in agg:
+            total_usd = float(doc.get("total", 0.0))
+            purchase_count = int(doc.get("count", 0))
+        items.append(
+            {
+                "wallet_address": wallet,
+                "founder_since": u.get("founder_since"),
+                "level": u.get("level", 1),
+                "self_purchase_usd": float(u.get("self_purchase", 0.0)),
+                "total_founder_usd": total_usd,
+                "founder_purchase_count": purchase_count,
+            }
+        )
+    return {"items": items, "total": total, "page": page, "limit": limit, "sort": sort}
+
+
+@router.post("/founders/backfill")
+async def rerun_founder_backfill():
+    """Force-run the founder backfill sweep, ignoring the completion marker.
+
+    Useful after historical data changes (e.g. status corrections that make
+    older purchases newly countable). Safe to call: only adds new marks under
+    the same cap, and only sets `founder=true` on newly-qualified users.
+    """
+    from app.services.founder import ensure_founder_backfill
+    from app.database import system_meta_col
+
+    await system_meta_col().update_one(
+        {"_id": "founder_state"},
+        {"$set": {"backfill_completed_at": None}},
+    )
+    return await ensure_founder_backfill()
