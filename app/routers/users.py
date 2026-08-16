@@ -129,6 +129,32 @@ async def register_user(req: UserRegisterRequest):
     return {"success": True, "wallet_address": req.wallet_address}
 
 
+def _user_response_from_doc(u: dict) -> UserResponse:
+    return UserResponse(
+        wallet_address=u["wallet_address"],
+        referrer_wallet=u.get("referrer_wallet", ""),
+        level=u.get("level", 1),
+        self_purchase=u.get("self_purchase", 0.0),
+        total_sales_usd=u.get("total_sales_usd", 0.0),
+        total_commission_sol=u.get("total_commission_sol", 0.0),
+        self_purchase_tokens=u.get("self_purchase_tokens", 0),
+        total_tokens_sold=u.get("total_tokens_sold", 0),
+        level_sales=u.get("level_sales", {}),
+        level_commission=u.get("level_commission", {}),
+        direct_sales_sol=u.get("direct_sales_sol", 0.0),
+        indirect_sales_sol=u.get("indirect_sales_sol", 0.0),
+        direct_commission_sol=u.get("direct_commission_sol", 0.0),
+        indirect_commission_sol=u.get("indirect_commission_sol", 0.0),
+        direct_referral_count=u.get("direct_referral_count", 0),
+        network_size=u.get("network_size", 0),
+        is_valid_referrer=u.get("is_valid_referrer", False),
+        founder=bool(u.get("founder", False)),
+        is_founder=bool(u.get("founder", False)),
+        founder_since=u.get("founder_since"),
+        joined_at=u["joined_at"],
+    )
+
+
 @router.get("/{wallet_address}", response_model=UserResponse)
 async def get_user(wallet_address: str):
     validate_solana_pubkey(wallet_address)
@@ -137,26 +163,7 @@ async def get_user(wallet_address: str):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserResponse(
-        wallet_address=user["wallet_address"],
-        referrer_wallet=user.get("referrer_wallet", ""),
-        level=user.get("level", 1),
-        self_purchase=user.get("self_purchase", 0.0),
-        total_sales_usd=user.get("total_sales_usd", 0.0),
-        total_commission_sol=user.get("total_commission_sol", 0.0),
-        self_purchase_tokens=user.get("self_purchase_tokens", 0),
-        total_tokens_sold=user.get("total_tokens_sold", 0),
-        level_sales=user.get("level_sales", {}),
-        level_commission=user.get("level_commission", {}),
-        direct_sales_sol=user.get("direct_sales_sol", 0.0),
-        indirect_sales_sol=user.get("indirect_sales_sol", 0.0),
-        direct_commission_sol=user.get("direct_commission_sol", 0.0),
-        indirect_commission_sol=user.get("indirect_commission_sol", 0.0),
-        direct_referral_count=user.get("direct_referral_count", 0),
-        network_size=user.get("network_size", 0),
-        is_valid_referrer=user.get("is_valid_referrer", False),
-        joined_at=user["joined_at"],
-    )
+    return _user_response_from_doc(user)
 
 
 @router.get("/{wallet_address}/directs", response_model=list[UserResponse])
@@ -169,28 +176,52 @@ async def get_direct_referrals(wallet_address: str):
 
     directs = []
     async for u in users_col().find({"referrer_wallet": wallet_address}):
-        directs.append(UserResponse(
-            wallet_address=u["wallet_address"],
-            referrer_wallet=u.get("referrer_wallet", ""),
-            level=u.get("level", 1),
-            self_purchase=u.get("self_purchase", 0.0),
-            total_sales_usd=u.get("total_sales_usd", 0.0),
-            total_commission_sol=u.get("total_commission_sol", 0.0),
-            self_purchase_tokens=u.get("self_purchase_tokens", 0),
-            total_tokens_sold=u.get("total_tokens_sold", 0),
-            level_sales=u.get("level_sales", {}),
-            level_commission=u.get("level_commission", {}),
-            direct_sales_sol=u.get("direct_sales_sol", 0.0),
-            indirect_sales_sol=u.get("indirect_sales_sol", 0.0),
-            direct_commission_sol=u.get("direct_commission_sol", 0.0),
-            indirect_commission_sol=u.get("indirect_commission_sol", 0.0),
-            direct_referral_count=u.get("direct_referral_count", 0),
-            network_size=u.get("network_size", 0),
-            is_valid_referrer=u.get("is_valid_referrer", False),
-            joined_at=u["joined_at"],
-        ))
+        directs.append(_user_response_from_doc(u))
 
     return directs
+
+
+@router.get("/{wallet_address}/founder")
+async def get_user_founder_status(wallet_address: str):
+    """A user's founder status plus every purchase that granted the flag."""
+    validate_solana_pubkey(wallet_address)
+
+    user = await users_col().find_one({"wallet_address": wallet_address})
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    purchases: list[dict] = []
+    total_usd = 0.0
+    cursor = purchases_col().find(
+        {"user_wallet": wallet_address, "founder_eligible": True},
+        {
+            "_id": 1,
+            "xfee_amount": 1,
+            "confirmed_at": 1,
+            "founder_eligible_at": 1,
+        },
+    ).sort("confirmed_at", 1)
+    async for p in cursor:
+        sale_usd = float(p.get("xfee_amount") or 0)
+        total_usd += sale_usd
+        purchases.append(
+            {
+                "purchase_id": str(p["_id"]),
+                "xfee_amount": p.get("xfee_amount"),
+                "confirmed_at": p.get("confirmed_at"),
+                "founder_eligible_at": p.get("founder_eligible_at"),
+            }
+        )
+
+    return {
+        "wallet_address": wallet_address,
+        "founder": bool(user.get("founder", False)),
+        "is_founder": bool(user.get("founder", False)),
+        "founder_since": user.get("founder_since"),
+        "founder_eligible_purchase_count": len(purchases),
+        "total_founder_eligible_usd": total_usd,
+        "founder_eligible_purchases": purchases,
+    }
 
 
 @router.get("/{wallet_address}/tree")

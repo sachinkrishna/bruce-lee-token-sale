@@ -30,3 +30,5 @@ class PurchaseResponse(BaseModel):
     confirmed_at: Optional[datetime] = None
     token_dispatch_tx: Optional[str] = None
     commission_distributed: bool = False
+    founder_eligible: bool = False
+    founder_eligible_at: Optional[datetime] = None
