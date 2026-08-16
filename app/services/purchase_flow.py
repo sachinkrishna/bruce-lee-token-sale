@@ -616,4 +616,13 @@ async def _post_flow_shared(pid: ObjectId, buyer_wallet: str, purchase_wallet_pu
         {"$set": {"is_valid_referrer": True}},
     )
 
+    try:
+        from app.services.founder import maybe_mark_founder_eligible
+
+        fresh = await purchases_col().find_one({"_id": pid})
+        if fresh is not None:
+            await maybe_mark_founder_eligible(fresh)
+    except Exception:
+        logger.exception(f"Founder eligibility check failed for purchase {pid}")
+
     await ensure_wallet_pool()

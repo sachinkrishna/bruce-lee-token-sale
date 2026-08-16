@@ -284,6 +284,8 @@ def _purchase_response_from_doc(p: dict) -> PurchaseResponse:
         confirmed_at=p.get("confirmed_at"),
         token_dispatch_tx=p.get("token_dispatch_tx"),
         commission_distributed=p.get("commission_distributed", False),
+        founder_eligible=bool(p.get("founder_eligible", False)),
+        founder_eligible_at=p.get("founder_eligible_at"),
     )
 
 

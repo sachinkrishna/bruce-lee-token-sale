@@ -33,6 +33,9 @@ class UserResponse(BaseModel):
     direct_referral_count: int = 0
     network_size: int = 0
     is_valid_referrer: bool = False
+    founder: bool = False
+    is_founder: bool = False
+    founder_since: Optional[datetime] = None
     joined_at: datetime
 
 
