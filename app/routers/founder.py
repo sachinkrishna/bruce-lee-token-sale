@@ -3,6 +3,7 @@ import logging
 
 from fastapi import APIRouter
 
+from app.config import settings
 from app.services.founder import (
     FOUNDER_ELIGIBLE_CAP_USD,
     FOUNDER_ELIGIBLE_MIN_PURCHASE_USD,
@@ -15,11 +16,16 @@ router = APIRouter(prefix="/api/v1/founder", tags=["founder"])
 
 @router.get("/progress")
 async def get_founder_progress():
-    """Current cumulative USD toward the founder cap, and whether it's still open.
+    """Current cumulative USD toward the founder cap plus round / mining state.
 
-    The `phase` field is derived: while the founder round is open, phase == "round";
-    once the $1M cap closes, phase == "mining" and mining_live == True. Callers
-    that prefer booleans can use `round_closed` + `mining_live` directly.
+    Fields are derived as follows:
+      * `round_closed` - True once cumulative sales reach the $1M cap
+        (i.e. the founder-eligibility state doc has `closed_at` set).
+      * `mining_live` - True whenever POWER staking is enabled on the
+        server (`POWER_DISTRIBUTION_ENABLED=true`). This is independent
+        of round state - staking can be flipped on/off at any time.
+      * `phase` - convenience label; `"mining"` when `mining_live` is
+        True, otherwise `"round"`.
     """
     state = await get_founder_state()
 
@@ -29,8 +35,8 @@ async def get_founder_progress():
     remaining = max(cap - cumulative, 0.0)
     is_open = state.get("closed_at") is None
     round_closed = not is_open
-    mining_live = round_closed
-    phase = "round" if is_open else "mining"
+    mining_live = bool(settings.power_distribution_enabled)
+    phase = "mining" if mining_live else "round"
 
     return {
         "cap_usd": cap,
