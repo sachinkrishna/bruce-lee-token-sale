@@ -22,10 +22,12 @@ async def get_founder_progress():
       * `round_closed` - True once cumulative sales reach the $1M cap
         (i.e. the founder-eligibility state doc has `closed_at` set).
       * `mining_live` - True whenever POWER staking is enabled on the
-        server (`POWER_DISTRIBUTION_ENABLED=true`). This is independent
-        of round state - staking can be flipped on/off at any time.
-      * `phase` - convenience label; `"mining"` when `mining_live` is
-        True, otherwise `"round"`.
+        server (`POWER_DISTRIBUTION_ENABLED=true`). Independent of the
+        round; staking can be toggled on/off at any time.
+      * `phase` - three-state label:
+          - `"round"`      - round is still open (regardless of staking flag)
+          - `"pre_mining"` - round closed but staking not yet enabled
+          - `"mining"`     - round closed and staking enabled
     """
     state = await get_founder_state()
 
@@ -36,7 +38,12 @@ async def get_founder_progress():
     is_open = state.get("closed_at") is None
     round_closed = not is_open
     mining_live = bool(settings.power_distribution_enabled)
-    phase = "mining" if mining_live else "round"
+    if not round_closed:
+        phase = "round"
+    elif mining_live:
+        phase = "mining"
+    else:
+        phase = "pre_mining"
 
     return {
         "cap_usd": cap,
