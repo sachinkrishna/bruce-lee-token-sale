@@ -168,6 +168,10 @@ def _purchase_response_from_doc(p: dict) -> PurchaseResponse:
         commission_distributed=p.get("commission_distributed", False),
         founder_eligible=bool(p.get("founder_eligible", False)),
         founder_eligible_at=p.get("founder_eligible_at"),
+        founder_onchain_status=p.get("founder_onchain_status"),
+        founder_onchain_tx=p.get("founder_onchain_tx"),
+        founder_onchain_amount=p.get("founder_onchain_amount"),
+        founder_onchain_written_at=p.get("founder_onchain_written_at"),
     )
 
 

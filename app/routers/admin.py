@@ -1682,3 +1682,204 @@ async def rerun_founder_backfill():
         {"$set": {"backfill_completed_at": None}},
     )
     return await ensure_founder_backfill()
+
+
+# ─── Founder on-chain write admin endpoints ─────────────────────────────────
+
+@router.post("/founder-onchain/write/{purchase_id}")
+async def admin_founder_onchain_write(
+    purchase_id: str,
+    force: bool = Query(
+        False,
+        description=(
+            "If true, skip the Mongo 'already written' fast path (still probes on-chain). "
+            "Use only for manual replays."
+        ),
+    ),
+    pool_address: str | None = Query(
+        None,
+        description="Override pool PDA. Defaults to FOUNDER_ONCHAIN_POOL_ADDRESS.",
+    ),
+    rpc_url: str | None = Query(
+        None,
+        description="Override RPC. Defaults to FOUNDER_ONCHAIN_RPC_URL / QUICKNODE_RPC_URL.",
+    ),
+):
+    """Force a single founder-onchain write for a specific purchase.
+
+    Idempotent by design: the program itself deduplicates on `external_ref`
+    (= purchase id). We also probe the `power_grant` PDA before writing so a
+    duplicate never sends a transaction.
+    """
+    try:
+        pid = ObjectId(purchase_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid purchase ID")
+
+    purchase = await purchases_col().find_one({"_id": pid})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+
+    from app.services.founder_onchain import write_founder_power_onchain
+
+    out = await write_founder_power_onchain(
+        purchase,
+        force=force,
+        pool_address=pool_address,
+        rpc_url=rpc_url,
+    )
+    return out
+
+
+@router.get("/founder-onchain/status/{purchase_id}")
+async def admin_founder_onchain_status(
+    purchase_id: str,
+    pool_address: str | None = Query(
+        None,
+        description="Override pool PDA. Defaults to FOUNDER_ONCHAIN_POOL_ADDRESS.",
+    ),
+    rpc_url: str | None = Query(
+        None,
+        description="Override RPC. Defaults to FOUNDER_ONCHAIN_RPC_URL / QUICKNODE_RPC_URL.",
+    ),
+):
+    """Return Mongo status + a live on-chain probe for this purchase's power grant."""
+    try:
+        pid = ObjectId(purchase_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid purchase ID")
+
+    purchase = await purchases_col().find_one({"_id": pid})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+
+    from app.config import founder_onchain_rpc_url as _rpc
+    from app.services.founder_onchain_sdk import power_grant_exists
+    from solana.rpc.async_api import AsyncClient
+    from solana.rpc.commitment import Confirmed
+
+    pool_str = pool_address or settings.founder_onchain_pool_address
+    rpc_str = rpc_url or _rpc()
+
+    on_chain_exists: bool | None = None
+    on_chain_error: str | None = None
+    if pool_str and rpc_str:
+        try:
+            pool_pk = Pubkey.from_string(pool_str)
+            conn = AsyncClient(rpc_str, commitment=Confirmed)
+            try:
+                on_chain_exists = await power_grant_exists(conn, pool_pk, str(pid))
+            finally:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            on_chain_error = str(e)
+
+    return {
+        "purchase_id": purchase_id,
+        "user_wallet": purchase.get("user_wallet"),
+        "xfee_amount": purchase.get("xfee_amount"),
+        "founder_eligible": bool(purchase.get("founder_eligible", False)),
+        "founder_eligible_at": purchase.get("founder_eligible_at"),
+        "founder_onchain_status": purchase.get("founder_onchain_status"),
+        "founder_onchain_tx": purchase.get("founder_onchain_tx"),
+        "founder_onchain_amount": purchase.get("founder_onchain_amount"),
+        "founder_onchain_external_ref": purchase.get("founder_onchain_external_ref"),
+        "founder_onchain_written_at": purchase.get("founder_onchain_written_at"),
+        "founder_onchain_last_attempt_at": purchase.get("founder_onchain_last_attempt_at"),
+        "founder_onchain_last_error": purchase.get("founder_onchain_last_error"),
+        "on_chain": {
+            "pool_address": pool_str or None,
+            "power_grant_exists": on_chain_exists,
+            "probe_error": on_chain_error,
+        },
+    }
+
+
+@router.post("/founder-onchain/run-repair-scan")
+async def admin_run_founder_onchain_repair_scan():
+    """Run one founder-onchain catch-up batch immediately."""
+    from app.services.founder_onchain import run_founder_onchain_repair_scan
+
+    return await run_founder_onchain_repair_scan()
+
+
+@router.get("/founder-onchain/audit")
+async def admin_founder_onchain_audit(
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """Count purchases by founder_onchain_status and list a few pending ones.
+
+    Cheap dashboard for verifying the worker's progress. Pending items are
+    sorted by `confirmed_at` ascending so the oldest lagging writes surface first.
+    """
+    status_counts: dict[str, int] = {}
+    pipeline = [
+        {"$match": {"founder_eligible": True}},
+        {"$group": {"_id": "$founder_onchain_status", "count": {"$sum": 1}}},
+    ]
+    async for row in purchases_col().aggregate(pipeline):
+        status_counts[row.get("_id") or "unset"] = int(row.get("count", 0))
+
+    pending_cursor = (
+        purchases_col()
+        .find(
+            {
+                "founder_eligible": True,
+                "founder_onchain_status": {"$in": ["pending", "disabled", None]},
+            },
+            {
+                "_id": 1,
+                "user_wallet": 1,
+                "xfee_amount": 1,
+                "confirmed_at": 1,
+                "founder_onchain_status": 1,
+                "founder_onchain_last_attempt_at": 1,
+                "founder_onchain_last_error": 1,
+            },
+        )
+        .sort("confirmed_at", 1)
+        .limit(limit)
+    )
+    pending: list[dict] = []
+    async for p in pending_cursor:
+        pending.append(
+            {
+                "purchase_id": str(p["_id"]),
+                "user_wallet": p.get("user_wallet"),
+                "xfee_amount": p.get("xfee_amount"),
+                "confirmed_at": p.get("confirmed_at"),
+                "founder_onchain_status": p.get("founder_onchain_status"),
+                "founder_onchain_last_attempt_at": p.get("founder_onchain_last_attempt_at"),
+                "founder_onchain_last_error": p.get("founder_onchain_last_error"),
+            }
+        )
+
+    return {
+        "enabled": settings.founder_onchain_enabled,
+        "program_id": settings.founder_onchain_program_id,
+        "pool_address": settings.founder_onchain_pool_address or None,
+        "status_counts": status_counts,
+        "pending_sample": pending,
+        "pending_sample_limit": limit,
+    }
+
+
+@router.post("/founder-onchain/rerun-backfill")
+async def admin_rerun_founder_onchain_backfill():
+    """Force-run the founder-onchain 'mark-as-pending' backfill.
+
+    Clears the completion marker in `system_meta` and re-stamps any
+    founder-eligible purchases missing `founder_onchain_status`. The repair
+    worker (if enabled) will then pick them up.
+    """
+    from app.services.founder_onchain import (
+        FOUNDER_ONCHAIN_BACKFILL_MARKER,
+        ensure_founder_onchain_backfill,
+    )
+    from app.database import system_meta_col
+
+    await system_meta_col().delete_one({"_id": FOUNDER_ONCHAIN_BACKFILL_MARKER})
+    return await ensure_founder_onchain_backfill()

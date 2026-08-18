@@ -30,6 +30,10 @@ async def ensure_indexes() -> None:
         [("founder_eligible", 1), ("confirmed_at", 1)],
         partialFilterExpression={"founder_eligible": True},
     )
+    await db.purchases.create_index(
+        [("founder_onchain_status", 1), ("confirmed_at", 1)],
+        partialFilterExpression={"founder_eligible": True},
+    )
     await db.users.create_index(
         [("founder", 1), ("founder_since", 1)],
         partialFilterExpression={"founder": True},

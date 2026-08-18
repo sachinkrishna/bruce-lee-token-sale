@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.bak
 .devnet_keys.json
+pk.py
 *.egg-info/
 dist/
 build/

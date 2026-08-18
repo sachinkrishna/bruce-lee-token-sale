@@ -90,6 +90,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Founder backfill failed (non-fatal, will retry next start)")
 
+    try:
+        from app.services.founder_onchain import ensure_founder_onchain_backfill
+
+        await ensure_founder_onchain_backfill()
+    except Exception:
+        logger.exception(
+            "Founder-onchain backfill failed (non-fatal; repair worker will still pick up eligible purchases)"
+        )
+
     await ensure_wallet_pool()
     logger.info("Purchase wallet pool checked")
 
@@ -159,6 +168,21 @@ async def lifespan(app: FastAPI):
             settings.global_pool_finalize_interval_seconds,
         )
 
+    founder_onchain_task = None
+    if settings.founder_onchain_enabled and not settings.test_mode:
+        from app.services.founder_onchain import founder_onchain_repair_worker_loop
+
+        founder_onchain_task = asyncio.create_task(founder_onchain_repair_worker_loop())
+        logger.info(
+            "Founder-onchain repair worker started (interval=%ss; min age=%s min; since_unix=%s; pool=%s)",
+            settings.founder_onchain_repair_interval_seconds,
+            settings.founder_onchain_repair_min_age_minutes,
+            settings.founder_onchain_repair_since_unix,
+            settings.founder_onchain_pool_address or "<unset>",
+        )
+    elif not settings.founder_onchain_enabled:
+        logger.info("Founder-onchain repair worker not started: FOUNDER_ONCHAIN_ENABLED=false")
+
     yield
 
     if repair_task:
@@ -171,6 +195,12 @@ async def lifespan(app: FastAPI):
         global_pool_task.cancel()
         try:
             await global_pool_task
+        except asyncio.CancelledError:
+            pass
+    if founder_onchain_task:
+        founder_onchain_task.cancel()
+        try:
+            await founder_onchain_task
         except asyncio.CancelledError:
             pass
 

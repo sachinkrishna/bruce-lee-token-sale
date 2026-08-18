@@ -32,3 +32,7 @@ class PurchaseResponse(BaseModel):
     commission_distributed: bool = False
     founder_eligible: bool = False
     founder_eligible_at: Optional[datetime] = None
+    founder_onchain_status: Optional[str] = None
+    founder_onchain_tx: Optional[str] = None
+    founder_onchain_amount: Optional[int] = None
+    founder_onchain_written_at: Optional[datetime] = None

@@ -68,7 +68,26 @@ class Settings(BaseSettings):
     global_pool_settlement_concurrency: int = 3
     global_pool_confirm_retries: int = 30
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # ── Founder on-chain writes ──────────────────────────────────────────────
+    # Writes each founder-eligible purchase's USD value to a Solana Revenue
+    # Split pool via `add_power`. Cumulative per-user, deduped by purchase id,
+    # kill-switched by FOUNDER_ONCHAIN_ENABLED, and retried by a repair worker.
+    founder_onchain_enabled: bool = False
+    founder_onchain_program_id: str = "XP4WvTsTeZFQXsGQeowobXC84kiY1oiq92EUcAv1VsM"
+    founder_onchain_pool_address: str = ""
+    # Base58-encoded 64-byte secret key for the pool admin/operator wallet
+    # authorized to call `add_power`. Kept independent of every other keypair.
+    founder_onchain_signer_private_key: str = ""
+    # RPC endpoint. Falls back to QUICKNODE_RPC_URL when empty.
+    founder_onchain_rpc_url: str = ""
+    founder_onchain_repair_interval_seconds: int = 120
+    founder_onchain_repair_min_age_minutes: int = 5
+    founder_onchain_repair_batch_size: int = 100
+    # Only repair purchases confirmed at/after this unix instant (UTC). Set to
+    # a real value to skip legacy purchases that shouldn't be replayed on-chain.
+    founder_onchain_repair_since_unix: int = 0
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()
@@ -82,3 +101,8 @@ def staking_signer_private_key() -> str:
     deployments keep working without any env change.
     """
     return settings.pool_authority_private_key or settings.master_wallet_private_key
+
+
+def founder_onchain_rpc_url() -> str:
+    """RPC endpoint for founder on-chain writes. Falls back to QUICKNODE_RPC_URL."""
+    return settings.founder_onchain_rpc_url or settings.quicknode_rpc_url

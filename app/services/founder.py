@@ -18,12 +18,14 @@ The live path (`maybe_mark_founder_eligible`) uses a `find_one_and_update`
 with an `$expr` gate for concurrency safety. The startup backfill processes
 existing completed purchases chronologically by `confirmed_at`.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from pymongo import ReturnDocument
 
+from app.config import settings
 from app.database import purchases_col, system_meta_col, users_col
 
 logger = logging.getLogger(__name__)
@@ -120,13 +122,16 @@ async def maybe_mark_founder_eligible(purchase: dict) -> bool:
 
     # Mark the purchase. The filter ensures idempotency — if another worker
     # marked it in parallel, `modified_count` will be 0 and we roll back the
-    # increment we just applied.
+    # increment we just applied. We also stamp `founder_onchain_status=pending`
+    # so the founder-onchain worker will pick it up (either now, if enabled,
+    # or later when the kill switch is flipped on).
     result = await purchases_col().update_one(
         {"_id": purchase["_id"], "founder_eligible": {"$ne": True}},
         {
             "$set": {
                 "founder_eligible": True,
                 "founder_eligible_at": now,
+                "founder_onchain_status": "pending",
             }
         },
     )
@@ -166,6 +171,18 @@ async def maybe_mark_founder_eligible(purchase: dict) -> bool:
         state["cumulative_usd"],
         state["cap_usd"],
     )
+
+    if settings.founder_onchain_enabled:
+        try:
+            from app.services.founder_onchain import try_write_founder_power_onchain
+
+            asyncio.create_task(try_write_founder_power_onchain(str(purchase["_id"])))
+        except Exception:
+            logger.exception(
+                "Failed to schedule founder-onchain write for purchase %s",
+                purchase.get("_id"),
+            )
+
     return True
 
 
@@ -222,6 +239,7 @@ async def ensure_founder_backfill() -> dict:
                     "$set": {
                         "founder_eligible": True,
                         "founder_eligible_at": now,
+                        "founder_onchain_status": "pending",
                     }
                 },
             )
