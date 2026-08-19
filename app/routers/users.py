@@ -130,10 +130,12 @@ async def register_user(req: UserRegisterRequest):
 
 
 def _user_response_from_doc(u: dict) -> UserResponse:
+    node_number = u.get("node_number")
     return UserResponse(
         wallet_address=u["wallet_address"],
         referrer_wallet=u.get("referrer_wallet", ""),
         level=u.get("level", 1),
+        node_number=int(node_number) if isinstance(node_number, int) else None,
         self_purchase=u.get("self_purchase", 0.0),
         total_sales_usd=u.get("total_sales_usd", 0.0),
         total_commission_sol=u.get("total_commission_sol", 0.0),

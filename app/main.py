@@ -91,6 +91,13 @@ async def lifespan(app: FastAPI):
         logger.exception("Founder backfill failed (non-fatal, will retry next start)")
 
     try:
+        from app.services.node_number import ensure_node_number_backfill
+
+        await ensure_node_number_backfill()
+    except Exception:
+        logger.exception("Node-number backfill failed (non-fatal, will retry next start)")
+
+    try:
         from app.services.founder_onchain import ensure_founder_onchain_backfill
 
         await ensure_founder_onchain_backfill()
@@ -474,7 +481,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import admin, burns, founder, global_pool, purchases, stats, users
+from app.routers import admin, burns, founder, global_pool, nodes, purchases, stats, users
 
 app.include_router(users.router)
 app.include_router(purchases.router)
@@ -485,6 +492,7 @@ app.include_router(admin.router)
 app.include_router(admin.public_admin_router)
 app.include_router(global_pool.admin_router)
 app.include_router(founder.router)
+app.include_router(nodes.router)
 
 if settings.test_mode:
     from app.routers import test

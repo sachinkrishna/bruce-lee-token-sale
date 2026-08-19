@@ -20,6 +20,11 @@ async def close_db() -> None:
 
 async def ensure_indexes() -> None:
     await db.users.create_index("wallet_address", unique=True)
+    await db.users.create_index(
+        "node_number",
+        unique=True,
+        partialFilterExpression={"node_number": {"$exists": True, "$type": "number"}},
+    )
     await db.relationship_tree.create_index("wallet_address", unique=True)
     await db.relationship_tree.create_index("referrer_wallet")
     await db.relationship_tree.create_index("ancestors")

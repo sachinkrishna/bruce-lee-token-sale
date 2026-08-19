@@ -19,6 +19,7 @@ class UserResponse(BaseModel):
     wallet_address: str
     referrer_wallet: str = ""
     level: int = 1
+    node_number: Optional[int] = None
     self_purchase: float = 0.0
     total_sales_usd: float = 0.0
     total_commission_sol: float = 0.0

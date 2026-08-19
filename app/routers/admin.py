@@ -1867,6 +1867,24 @@ async def admin_founder_onchain_audit(
     }
 
 
+@router.post("/nodes/rerun-backfill")
+async def admin_rerun_node_number_backfill():
+    """Force-run the node-number backfill, ignoring the completion marker.
+
+    Idempotent: never touches wallets that already have a node number.
+    Useful after historical data changes (status corrections, hand-fixed
+    confirmed_at, etc.) that create newly-eligible wallets.
+    """
+    from app.services.node_number import (
+        NODE_NUMBER_BACKFILL_ID,
+        ensure_node_number_backfill,
+    )
+    from app.database import system_meta_col
+
+    await system_meta_col().delete_one({"_id": NODE_NUMBER_BACKFILL_ID})
+    return await ensure_node_number_backfill()
+
+
 @router.post("/founder-onchain/rerun-backfill")
 async def admin_rerun_founder_onchain_backfill():
     """Force-run the founder-onchain 'mark-as-pending' backfill.

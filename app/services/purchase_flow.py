@@ -328,6 +328,14 @@ async def process_completed_purchase(
         {"$set": {"is_valid_referrer": True}},
     )
 
+    # 9a. Assign node number (idempotent — no-op if already assigned)
+    try:
+        from app.services.node_number import assign_node_number
+
+        await assign_node_number(buyer_wallet)
+    except Exception:
+        logger.exception(f"Node-number assignment failed for purchase {purchase_id}")
+
     # 10. Founder-eligibility check (idempotent, cap-gated)
     try:
         from app.services.founder import maybe_mark_founder_eligible
