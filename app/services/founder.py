@@ -31,7 +31,7 @@ from app.database import purchases_col, system_meta_col, users_col
 logger = logging.getLogger(__name__)
 
 FOUNDER_ELIGIBLE_CAP_USD: float = 1_000_000.0
-FOUNDER_ELIGIBLE_MIN_PURCHASE_USD: float = 100.0
+FOUNDER_ELIGIBLE_MIN_PURCHASE_USD: float = 50.0
 FOUNDER_STATE_ID: str = "founder_state"
 
 
@@ -192,9 +192,38 @@ async def ensure_founder_backfill() -> dict:
     Runs during lifespan startup. Idempotent: a `backfill_completed_at` marker
     on the state doc prevents re-application on redeploys.
 
+    Sync-and-rerun: if the code-level constants have drifted from the cached
+    values in the state doc (e.g. `FOUNDER_ELIGIBLE_MIN_PURCHASE_USD` was
+    lowered), we sync the state doc and clear the marker so the backfill
+    reprocesses any newly-eligible purchases in one atomic pass.
+
     Returns a summary of what happened.
     """
     state = await _ensure_state_doc()
+
+    cached_min = float(state.get("min_purchase_usd", FOUNDER_ELIGIBLE_MIN_PURCHASE_USD))
+    cached_cap = float(state.get("cap_usd", FOUNDER_ELIGIBLE_CAP_USD))
+    constants_drifted = (
+        cached_min != FOUNDER_ELIGIBLE_MIN_PURCHASE_USD
+        or cached_cap != FOUNDER_ELIGIBLE_CAP_USD
+    )
+    if constants_drifted:
+        logger.info(
+            "Founder constants drifted (cached min=%s cap=%s, code min=%s cap=%s) — clearing backfill marker",
+            cached_min, cached_cap,
+            FOUNDER_ELIGIBLE_MIN_PURCHASE_USD, FOUNDER_ELIGIBLE_CAP_USD,
+        )
+        await system_meta_col().update_one(
+            {"_id": FOUNDER_STATE_ID},
+            {
+                "$set": {
+                    "min_purchase_usd": FOUNDER_ELIGIBLE_MIN_PURCHASE_USD,
+                    "cap_usd": FOUNDER_ELIGIBLE_CAP_USD,
+                    "backfill_completed_at": None,
+                }
+            },
+        )
+        state = await system_meta_col().find_one({"_id": FOUNDER_STATE_ID}) or state
 
     if state.get("backfill_completed_at"):
         return {

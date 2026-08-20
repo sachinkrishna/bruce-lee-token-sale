@@ -1867,6 +1867,33 @@ async def admin_founder_onchain_audit(
     }
 
 
+@router.post("/power-entitlement/rerun-backfill")
+async def admin_rerun_power_entitlement_backfill(
+    force_recompute: bool = Query(
+        False,
+        description=(
+            "If true, recompute and overwrite `power_entitlement` on every completed "
+            "purchase, even those already stamped. Use after changing the tier table "
+            "or bonus rules."
+        ),
+    ),
+):
+    """Recompute `power_entitlement` across every completed purchase.
+
+    Idempotent when `force_recompute=false` — only touches rows where the
+    current stored value differs from the newly-computed one, so redundant
+    calls do nothing.
+    """
+    from app.services.power_entitlement import (
+        POWER_ENTITLEMENT_BACKFILL_MARKER,
+        ensure_power_entitlement_backfill,
+    )
+    from app.database import system_meta_col
+
+    await system_meta_col().delete_one({"_id": POWER_ENTITLEMENT_BACKFILL_MARKER})
+    return await ensure_power_entitlement_backfill(force_recompute=force_recompute)
+
+
 @router.post("/nodes/rerun-backfill")
 async def admin_rerun_node_number_backfill():
     """Force-run the node-number backfill, ignoring the completion marker.

@@ -36,3 +36,4 @@ class PurchaseResponse(BaseModel):
     founder_onchain_tx: Optional[str] = None
     founder_onchain_amount: Optional[int] = None
     founder_onchain_written_at: Optional[datetime] = None
+    power_entitlement: Optional[int] = None

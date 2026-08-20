@@ -106,6 +106,15 @@ async def lifespan(app: FastAPI):
             "Founder-onchain backfill failed (non-fatal; repair worker will still pick up eligible purchases)"
         )
 
+    try:
+        from app.services.power_entitlement import ensure_power_entitlement_backfill
+
+        await ensure_power_entitlement_backfill()
+    except Exception:
+        logger.exception(
+            "power_entitlement backfill failed (non-fatal; admin rerun endpoint can retry)"
+        )
+
     await ensure_wallet_pool()
     logger.info("Purchase wallet pool checked")
 

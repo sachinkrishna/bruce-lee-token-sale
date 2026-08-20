@@ -346,6 +346,15 @@ async def process_completed_purchase(
     except Exception:
         logger.exception(f"Founder eligibility check failed for purchase {purchase_id}")
 
+    # 10a. Stamp power_entitlement (shadow ledger; runs *after* founder mark
+    # so the tier bonus is applied iff the purchase became founder-eligible).
+    try:
+        from app.services.power_entitlement import stamp_power_entitlement
+
+        await stamp_power_entitlement(pid)
+    except Exception:
+        logger.exception(f"power_entitlement stamp failed for purchase {purchase_id}")
+
     # 11. Top up wallet pool if needed
     await ensure_wallet_pool()
 

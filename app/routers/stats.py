@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from app.config import settings
 from app.database import purchases_col
 from app.services.sol_price import get_sol_price
-from app.utils.economics import POWER_STAKE_MULTIPLIER
+from app.utils.economics import FOUNDER_TIER_BONUS_TABLE, POWER_STAKE_MULTIPLIER
 from app.utils.level import LEVEL_THRESHOLDS
 
 router = APIRouter(prefix="/api/v1/stats", tags=["stats"])
@@ -107,6 +107,13 @@ async def power_stats():
     total_pending_delayed_stake = sum(by_status.get(k, {}).get("power_total", 0) for k in pending_keys)
     pending_purchase_count = sum(by_status.get(k, {}).get("count", 0) for k in pending_keys)
 
+    from app.services.founder import get_founder_state
+    from app.services.power_entitlement import total_entitlement_system_wide
+
+    founder_state = await get_founder_state()
+    cap_active = founder_state.get("closed_at") is None
+    total_entitlement = await total_entitlement_system_wide()
+
     return {
         "total_distributed": total_distributed,
         "distributed_purchase_count": distributed_purchase_count,
@@ -116,4 +123,16 @@ async def power_stats():
         "power_stake_multiplier": POWER_STAKE_MULTIPLIER,
         "power_distribution_enabled": settings.power_distribution_enabled,
         "power_delayed_stake_bonus_multiplier": settings.power_delayed_stake_bonus_multiplier,
+        # ── Shadow-ledger entitlement summary ─────────────────────────────
+        "total_power_entitlement": total_entitlement,
+        "founder_tier_bonuses": [
+            {"tier_usd": usd, "bonus_power": bonus}
+            for usd, bonus in sorted(FOUNDER_TIER_BONUS_TABLE.items())
+        ],
+        "founder_tier_bonus_active": cap_active,
+        "founder_state": {
+            "cumulative_usd": float(founder_state.get("cumulative_usd", 0.0)),
+            "cap_usd": float(founder_state.get("cap_usd", 0.0)),
+            "closed_at": founder_state.get("closed_at"),
+        },
     }

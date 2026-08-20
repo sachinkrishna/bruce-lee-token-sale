@@ -399,6 +399,10 @@ async def get_user_power(
         "power_delayed_stake_bonus_multiplier": settings.power_delayed_stake_bonus_multiplier,
     }
 
+    from app.services.power_entitlement import total_entitlement_for_wallet
+
+    response["total_power_entitlement"] = await total_entitlement_for_wallet(wallet_address)
+
     if include_purchases:
         purchases: list[dict] = []
         cursor = (
@@ -412,6 +416,7 @@ async def get_user_power(
             effective = staked if staked is not None else base
             bonus_applied = bool(p.get("power_bonus_applied"))
             bonus_portion = max(0, (staked or 0) - base) if bonus_applied else 0
+            entitlement = p.get("power_entitlement")
             purchases.append(
                 {
                     "purchase_id": str(p["_id"]),
@@ -422,6 +427,7 @@ async def get_user_power(
                     "power_bonus_multiplier": float(p.get("power_bonus_multiplier", 1.0) or 1.0),
                     "power_bonus_applied": bonus_applied,
                     "power_bonus_amount": int(bonus_portion),
+                    "power_entitlement": int(entitlement) if isinstance(entitlement, int) else None,
                     "power_distribution_status": p.get("power_distribution_status"),
                     "power_distribution_last_error": p.get("power_distribution_last_error"),
                     "power_distribution_last_attempt_at": p.get("power_distribution_last_attempt_at"),
