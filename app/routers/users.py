@@ -266,10 +266,12 @@ async def _build_tree(
          `(root_depth, root_depth + max_depth]`.
       2. `relationship_tree` count probe to detect any deeper descendant
          beyond `max_depth` so we can surface a truncation flag.
-      3. `users` to fetch the `level` field for every wallet in the
-         result set in a single $in query.
+      3. `users` to fetch `level` + `total_sales_usd` for every wallet in
+         the result set in a single $in query.
 
-    The nested structure is then assembled in memory from the parent map.
+    The nested structure is assembled in memory from the parent map, and
+    each node's `children` array is sorted by `total_sales_usd` DESC (ties
+    broken by wallet_address for determinism).
     """
     root_tree = await relationship_tree_col().find_one({"wallet_address": root_wallet})
     root_depth = int(root_tree.get("depth", 0) or 0) if root_tree else 0
@@ -294,12 +296,15 @@ async def _build_tree(
     wallets = {root_wallet}
     wallets.update(d["wallet_address"] for d in descendants)
     levels: dict[str, int] = {root_wallet: int(root_level or 1)}
+    total_sales: dict[str, float] = {}
     if wallets:
         async for u in users_col().find(
             {"wallet_address": {"$in": list(wallets)}},
-            {"wallet_address": 1, "level": 1},
+            {"wallet_address": 1, "level": 1, "total_sales_usd": 1},
         ):
-            levels[u["wallet_address"]] = int(u.get("level", 1) or 1)
+            w = u["wallet_address"]
+            levels[w] = int(u.get("level", 1) or 1)
+            total_sales[w] = float(u.get("total_sales_usd", 0.0) or 0.0)
 
     children_map: dict[str, list[str]] = defaultdict(list)
     for d in descendants:
@@ -308,10 +313,14 @@ async def _build_tree(
         if parent and child:
             children_map[parent].append(child)
 
+    for parent, kids in children_map.items():
+        kids.sort(key=lambda w: (-total_sales.get(w, 0.0), w))
+
     def build_node(wallet: str) -> dict:
         return {
             "wallet": wallet,
             "level": levels.get(wallet, 1),
+            "total_sales_usd": total_sales.get(wallet, 0.0),
             "children": [build_node(c) for c in children_map.get(wallet, [])],
         }
 
