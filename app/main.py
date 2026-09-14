@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI):
         await _ensure_root_child()
 
     await _migrate_ladder_to_15_tier()
+    await _migrate_remove_liquidity_wallet()
 
     try:
         from app.services.founder import ensure_founder_backfill
@@ -344,6 +345,190 @@ async def _migrate_ladder_to_15_tier():
     logger.info(
         "Ladder migration to 15-tier applied (stragglers=%s, root_child_demoted=%s)",
         stragglers, root_child_demoted,
+    )
+
+
+# Wallets promoted alongside the liquidity-wallet removal (see
+# `_migrate_remove_liquidity_wallet`). Hardcoded because this is a one-shot
+# production migration for these specific wallets; the migration is
+# marker-guarded so it can't re-run in another environment where these
+# addresses may not exist (the update_one calls would just no-op).
+_POST_LIQUIDITY_PROMOTIONS = [
+    # (wallet_address, new_level, description)
+    ("Ghq6fHG9H5bqPrhhXwqpnXf5DbxJV239geenCzGfNYWY", 14, "Ghq6fH takes over BRrtYf's L14 (95%) slot"),
+    ("DjTmMTBnMbRqY4fdBumKkwoPsrNoaiKX5fSVeihgLv7R", 13, "DjTmMT promoted L12 -> L13 (50%)"),
+]
+
+
+async def _migrate_remove_liquidity_wallet():
+    """Remove the liquidity/root-child wallet from the referral tree and
+    promote the wallets that inherit its position.
+
+    The ladder itself is unchanged (still 15 tiers with the same rates). What
+    changes is *who occupies which slot*:
+
+    - The wallet configured as `root_child` (BRrtYf in production) is
+      reparented **out of the tree**:
+        * Its `relationship_tree` doc is deleted so it no longer appears in
+          `/user/{wallet}/tree`, ancestor walks, or commission distribution.
+        * Its direct child (Ghq6fH in production) is reparented under master,
+          and every descendant in that subtree has the liquidity wallet
+          removed from its `ancestors` array and its `depth` decremented
+          by one.
+        * The user doc is kept for historical auditing (past commissions,
+          founder flag, etc.), tagged with `removed_from_tree_at`.
+    - Ghq6fH is promoted L13 -> L14 (takes over the retired liquidity slot's
+      95% cumulative rate).
+    - DjTmMT is promoted L12 -> L13 (fills the slot Ghq6fH vacated at 50%).
+    - Any straggler still at L14 that isn't part of this promotion set gets
+      recomputed from sales (defensive; BRrtYf itself would be the only such
+      wallet in production).
+
+    Idempotent via a marker doc in `system_meta`.
+    """
+    from datetime import datetime, timezone
+    from app.utils.level import get_level_from_sales
+
+    marker_id = "remove_liquidity_wallet_2026_09"
+    marker = await system_meta_col().find_one({"_id": marker_id})
+    if marker and marker.get("applied"):
+        return
+
+    now = datetime.now(timezone.utc)
+    master_addr = settings.master_wallet_address
+
+    # 1. Reparent the retired liquidity wallet out of the tree (if it exists
+    #    and is not master).
+    liquidity_addr = settings.root_child_wallet_address
+    liquidity_reparented = 0
+    subtree_updated = 0
+
+    if liquidity_addr and liquidity_addr != master_addr:
+        liquidity_tree = await relationship_tree_col().find_one(
+            {"wallet_address": liquidity_addr}
+        )
+
+        if liquidity_tree is not None:
+            # Descendants whose ancestor list includes the liquidity wallet.
+            # These need liquidity_addr removed from `ancestors` and `depth -= 1`.
+            async for doc in relationship_tree_col().find({"ancestors": liquidity_addr}):
+                new_ancestors = [a for a in doc.get("ancestors", []) if a != liquidity_addr]
+                new_depth = max(0, int(doc.get("depth", 0) or 0) - 1)
+                update_fields = {"ancestors": new_ancestors, "depth": new_depth}
+                # If this doc's *direct* parent was the liquidity wallet, that
+                # direct child (Ghq6fH in production) becomes a direct child of
+                # master. Every other descendant keeps its immediate referrer.
+                if doc.get("referrer_wallet") == liquidity_addr:
+                    update_fields["referrer_wallet"] = master_addr
+                    await users_col().update_one(
+                        {"wallet_address": doc["wallet_address"]},
+                        {"$set": {"referrer_wallet": master_addr}},
+                    )
+                await relationship_tree_col().update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": update_fields},
+                )
+                subtree_updated += 1
+
+            # 2. Delete the liquidity wallet's tree entry so it disappears from
+            #    tree walks and no longer receives commission allocs.
+            await relationship_tree_col().delete_one({"wallet_address": liquidity_addr})
+            liquidity_reparented = 1
+
+            # 3. Mark the user doc for auditing; reset in-tree counters and
+            #    demote the level (was L14, no longer occupies that slot).
+            liq_user = await users_col().find_one({"wallet_address": liquidity_addr})
+            new_liq_lvl = get_level_from_sales(
+                float((liq_user or {}).get("total_sales_usd", 0.0) or 0.0)
+            )
+            await users_col().update_one(
+                {"wallet_address": liquidity_addr},
+                {
+                    "$set": {
+                        "removed_from_tree_at": now,
+                        "direct_referral_count": 0,
+                        "network_size": 0,
+                        "level": new_liq_lvl,
+                    }
+                },
+            )
+
+            logger.info(
+                "Liquidity-wallet removal: %s reparented out "
+                "(subtree_updated=%s, level %s -> L%s)",
+                liquidity_addr, subtree_updated,
+                (liq_user or {}).get("level"), new_liq_lvl,
+            )
+
+    # 4. Refresh master's direct_referral_count and network_size after the
+    #    reparent (a new direct child appeared under master).
+    if master_addr:
+        directs = await users_col().count_documents({"referrer_wallet": master_addr})
+        network = await relationship_tree_col().count_documents({"ancestors": master_addr})
+        await users_col().update_one(
+            {"wallet_address": master_addr},
+            {"$set": {"direct_referral_count": directs, "network_size": network}},
+        )
+
+    # 5. Promote the successor wallets. Only promotes (never demotes).
+    promotions = []
+    for addr, target_lvl, desc in _POST_LIQUIDITY_PROMOTIONS:
+        user = await users_col().find_one({"wallet_address": addr})
+        if not user:
+            logger.info("Promotion skipped, wallet not present: %s (%s)", addr, desc)
+            continue
+        current_lvl = int(user.get("level", 1) or 1)
+        if current_lvl >= target_lvl:
+            logger.info(
+                "Promotion no-op: %s already at L%s (target L%s) — %s",
+                addr, current_lvl, target_lvl, desc,
+            )
+            continue
+        await users_col().update_one(
+            {"wallet_address": addr},
+            {"$set": {"level": target_lvl}},
+        )
+        promotions.append({"wallet": addr, "from": current_lvl, "to": target_lvl})
+        logger.info("Promoted %s: L%s -> L%s (%s)", addr, current_lvl, target_lvl, desc)
+
+    # 6. Defensive: any straggler still at L14 that isn't master and isn't
+    #    part of our promotion set gets recomputed from sales.
+    promotion_addrs = {a for a, _, _ in _POST_LIQUIDITY_PROMOTIONS}
+    exclude = {master_addr} | promotion_addrs
+    stragglers_l14 = 0
+    async for user in users_col().find(
+        {"level": 14, "wallet_address": {"$nin": list(exclude)}}
+    ):
+        new_lvl = get_level_from_sales(float(user.get("total_sales_usd", 0.0) or 0.0))
+        await users_col().update_one(
+            {"wallet_address": user["wallet_address"]},
+            {"$set": {"level": new_lvl}},
+        )
+        stragglers_l14 += 1
+        logger.info(
+            "Liquidity-wallet removal: straggler %s (L14) recomputed to L%s "
+            "from total_sales_usd=$%s",
+            user["wallet_address"], new_lvl, user.get("total_sales_usd", 0.0),
+        )
+
+    await system_meta_col().update_one(
+        {"_id": marker_id},
+        {
+            "$set": {
+                "applied": True,
+                "applied_at": now,
+                "liquidity_reparented": liquidity_reparented,
+                "subtree_updated": subtree_updated,
+                "promotions": promotions,
+                "stragglers_l14": stragglers_l14,
+            }
+        },
+        upsert=True,
+    )
+    logger.info(
+        "Liquidity-wallet removal migration applied "
+        "(reparented=%s, subtree_updated=%s, promotions=%s, stragglers_l14=%s)",
+        liquidity_reparented, subtree_updated, len(promotions), stragglers_l14,
     )
 
 

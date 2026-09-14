@@ -87,7 +87,7 @@ Cumulative-differential commission ladder (15 tiers, all values are commission *
 | 11 | 42.5% | 1,000,000,000 | Effectively manual-only |
 | 12 | 45% | 2,000,000,000 | Manual-only |
 | 13 | 50% | 3,000,000,000 | Manual-only |
-| 14 | 95% | 5,000,000,000 | Manual-only |
+| 14 | 95% | 5,000,000,000 | Manual-only (top operator slot) |
 | 15 | 100% | 10,000,000,000 | Reserved (master) |
 
 Levels 1–10 are reachable organically via `total_sales_usd` volume. Levels 11–15 are manual upgrades only — they exist for special operator wallets.
