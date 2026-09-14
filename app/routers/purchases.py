@@ -41,8 +41,8 @@ async def estimate_purchase(xfee_amount: int = Query(..., ge=1)):
     if token_cost_usd < 26.0:
         gas_buffer = 0.20
     else:
-        gas_buffer = round(random.uniform(2.0, 4.0), 2)
-        
+        gas_buffer = round(random.uniform(0.9, 1.0), 2)
+
     usd_total = token_cost_usd + gas_buffer
     sol_needed = round(usd_total / sol_price, 6)
 
@@ -85,12 +85,12 @@ async def initiate_purchase(req: PurchaseInitiateRequest):
     if token_cost_usd < 26.0:
         gas_buffer_usd = 0.20
     else:
-        gas_buffer_usd = 2.0
+        gas_buffer_usd = 0.9
         try:
             buyer_balance_lamports = await get_balance(req.wallet_address)
             buyer_balance_sol = buyer_balance_lamports / 1e9
-            if buyer_balance_sol >= purchase_value_sol + (4.0 / sol_price):
-                gas_buffer_usd = round(random.uniform(2.0, 4.0), 2)
+            if buyer_balance_sol >= purchase_value_sol + (1.0 / sol_price):
+                gas_buffer_usd = round(random.uniform(0.9, 1.0), 2)
         except Exception:
             logger.warning(f"Could not read balance for {req.wallet_address}, using minimum gas buffer")
 
