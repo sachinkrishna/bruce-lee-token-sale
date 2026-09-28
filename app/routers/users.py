@@ -408,9 +408,29 @@ async def get_user_power(
         "power_delayed_stake_bonus_multiplier": settings.power_delayed_stake_bonus_multiplier,
     }
 
+    from app.services.founder import FOUNDER_ELIGIBLE_CAP_USD, get_founder_state
     from app.services.power_entitlement import total_entitlement_for_wallet
 
-    response["total_power_entitlement"] = await total_entitlement_for_wallet(wallet_address)
+    total_entitlement = await total_entitlement_for_wallet(wallet_address)
+    response["total_power_entitlement"] = total_entitlement
+
+    # ── Founder breakout (additive, no changes to existing fields) ────────
+    # Uses the values already stamped on each purchase — no re-compute of
+    # historical purchases. `tier_bonus_power` = entitlement above base 20x.
+    total_base_power = sum(
+        int(v.get("base_total", 0)) for v in by_status.values()
+    )
+    tier_bonus_power = max(0, total_entitlement - total_base_power)
+    founder_state = await get_founder_state()
+    cap_usd = float(founder_state.get("cap_usd", FOUNDER_ELIGIBLE_CAP_USD))
+    cumulative_usd = float(founder_state.get("cumulative_usd", 0.0))
+    response["founder"] = {
+        "eligible": bool(user.get("founder", False)),
+        "base_power": total_base_power,
+        "tier_bonus_power": tier_bonus_power,
+        "total_power": total_entitlement,
+        "cap_remaining_usd": max(0.0, cap_usd - cumulative_usd),
+    }
 
     if include_purchases:
         purchases: list[dict] = []
