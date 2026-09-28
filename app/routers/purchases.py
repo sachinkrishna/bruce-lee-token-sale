@@ -19,6 +19,7 @@ from app.models.purchase import (
 from app.services.sol_price import get_sol_price
 from app.services.wallet_pool import ensure_wallet_pool, lock_wallet
 from app.tasks.poller import poll_purchase_wallet
+from app.utils.economics import MIN_PACKAGE_USD
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["purchases"])
@@ -62,6 +63,12 @@ async def initiate_purchase(req: PurchaseInitiateRequest):
 
     if req.xfee_amount <= 0:
         raise HTTPException(status_code=400, detail="xfee_amount must be positive")
+
+    if req.xfee_amount < MIN_PACKAGE_USD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Minimum purchase is ${MIN_PACKAGE_USD}",
+        )
 
     user = await users_col().find_one({"wallet_address": req.wallet_address})
     if not user:

@@ -4,6 +4,62 @@ Running log of items to come back to. Add newest at the top with a date.
 
 ---
 
+## 2026-09-28 — New POWER package table (8 tiers, $100 min); cap gate removed
+
+**Change shipped** (pending deploy):
+
+- `app/utils/economics.py`: replaced the founder-tier bonus table with a
+  new `PACKAGE_POWER_TABLE` (exact-match, TOTAL POWER per package):
+
+    | USD    | Total POWER |
+    |-------:|------------:|
+    | $100   |       2,600 |
+    | $250   |       7,000 |
+    | $500   |      15,000 |
+    | $1,000 |      32,000 |
+    | $2,500 |      85,000 |
+    | $5,000 |     180,000 |
+    | $10,000|     380,000 |
+    | $25,000|   1,000,000 |
+
+  Per-$ progression: 26 → 28 → 30 → 32 → 34 → 36 → 38 → 40.
+
+  `MIN_PACKAGE_USD = 100`. `FOUNDER_TIER_BONUS_TABLE` is now a derived alias
+  (`total − 20×base`) preserved for backward compatibility.
+  `calculate_power_entitlement()`: tier lookup no longer gated on
+  `founder_eligible` (the $1M cap doesn't block the bonus anymore).
+  Non-tier amounts still fall back to base 20×.
+
+- `app/routers/purchases.py`: `/purchase/initiate` rejects any
+  `xfee_amount < 100` with a 400.
+
+- `app/routers/stats.py`: `/stats/power` now returns a `packages` list
+  (USD, total_power, base, bonus, per-$) alongside `founder_tier_bonuses`
+  (legacy alias) and `min_package_usd`.
+
+- `FRONTEND_INTEGRATION.md`: new §5b listing the packages; `MIN_PURCHASE_XFEE`
+  raised from $6 to $100.
+
+**Deliberately unchanged**:
+
+- `app/services/founder.py` — the $1M cap logic, `maybe_mark_founder_eligible`,
+  and `FOUNDER_ELIGIBLE_MIN_PURCHASE_USD = 50` all stay. The founder cap still
+  gates the `founder_eligible` flag (which drives founder-on-chain writes),
+  but it no longer gates the tier-bonus lookup.
+- `app/services/founder_onchain.py` — on-chain writer still posts
+  `int(xfee_amount)` as the POWER delta (e.g. $100 → 100 POWER on-chain).
+  Divergence from the shadow-ledger `power_entitlement` grows under the new
+  table but is expected.
+- `ensure_power_entitlement_backfill` marker in `system_meta` — untouched;
+  the backfill will NOT re-run. All 92 existing purchases keep their
+  currently-stamped `power_entitlement` values (computed under the old table).
+
+**Future purchases only.** Every existing purchase in the DB keeps whatever
+`power_entitlement` was stamped under the old rules. Only new purchases
+after deploy use the new table.
+
+---
+
 ## 2026-09-14 — Liquidity wallet removed from tree; Ghq6fH + DjTmMT promoted
 
 **Change shipped** (pending deploy):

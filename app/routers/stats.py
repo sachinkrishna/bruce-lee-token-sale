@@ -5,7 +5,12 @@ from fastapi import APIRouter
 from app.config import settings
 from app.database import purchases_col
 from app.services.sol_price import get_sol_price
-from app.utils.economics import FOUNDER_TIER_BONUS_TABLE, POWER_STAKE_MULTIPLIER
+from app.utils.economics import (
+    FOUNDER_TIER_BONUS_TABLE,
+    MIN_PACKAGE_USD,
+    PACKAGE_POWER_TABLE,
+    POWER_STAKE_MULTIPLIER,
+)
 from app.utils.level import LEVEL_THRESHOLDS
 
 router = APIRouter(prefix="/api/v1/stats", tags=["stats"])
@@ -125,6 +130,19 @@ async def power_stats():
         "power_delayed_stake_bonus_multiplier": settings.power_delayed_stake_bonus_multiplier,
         # ── Shadow-ledger entitlement summary ─────────────────────────────
         "total_power_entitlement": total_entitlement,
+        "min_package_usd": MIN_PACKAGE_USD,
+        "packages": [
+            {
+                "usd": usd,
+                "power_total": total,
+                "base_power": usd * POWER_STAKE_MULTIPLIER,
+                "bonus_power": total - usd * POWER_STAKE_MULTIPLIER,
+                "power_per_dollar": round(total / usd, 2),
+            }
+            for usd, total in sorted(PACKAGE_POWER_TABLE.items())
+        ],
+        # Legacy alias for backward-compat clients that consume the older
+        # bonus-only list. Same numbers as `packages[*].bonus_power`.
         "founder_tier_bonuses": [
             {"tier_usd": usd, "bonus_power": bonus}
             for usd, bonus in sorted(FOUNDER_TIER_BONUS_TABLE.items())

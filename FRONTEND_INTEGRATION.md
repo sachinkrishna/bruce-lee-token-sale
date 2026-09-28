@@ -35,7 +35,7 @@ These are constants. Hard-code or env-config them on the frontend.
 |---|---|---|
 | `MASTER_WALLET` | `DXSEB4WrtfSFvD6ZKvyiyg9GDnEgmc6uAPpkHHQBNwFB` | Top of referral tree, level 15 (100% rate). Can be used as `referrer_wallet` like any normal wallet. |
 | `XFEE_PRICE_USD` | `1.00` | 1 XFEE always costs $1 USD. Hard-coded. The amount of SOL needed is computed from the live SOL/USD oracle. |
-| `MIN_PURCHASE_XFEE` | `6` | Minimum purchase size (= $6). Smaller amounts are allowed by the API but the gas buffer math is tuned for ≥ $6. |
+| `MIN_PURCHASE_XFEE` | `100` | Minimum purchase size (= $100). The API rejects any purchase below this with a 400 error. |
 | `PURCHASE_TIMEOUT_MINUTES` | `15` | A purchase expires if SOL doesn't arrive in 15 minutes. |
 | `XFEE supply` | Unlimited | No hard cap on tokens sold. |
 
@@ -108,6 +108,30 @@ For each purchase, the backend walks up the buyer's referrer chain. Each ancesto
 | master (L15) | 100% | 95% | 5% | $5.00 |
 
 So even though A is in C's tree, they receive 0 SOL on this purchase because B already consumed the L1 differential. A is recorded as a "zero-alloc" — they accrue **global pool points** equal to the USD value B received ($20).
+
+---
+
+## 5b. Purchase packages (POWER entitlement)
+
+Buyers must purchase one of these exact USD amounts. Any purchase below `MIN_PURCHASE_XFEE = 100` is rejected by the API. Non-tier amounts are technically accepted by the API but only receive the base 20× POWER (no bonus) — the frontend should enforce the tier set.
+
+| Package (USD) | Total POWER | Base POWER (20×) | Bonus | POWER per $ |
+|---:|---:|---:|---:|---:|
+| $100 | 2,600 | 2,000 | 600 | 26× |
+| $250 | 7,000 | 5,000 | 2,000 | 28× |
+| $500 | 15,000 | 10,000 | 5,000 | 30× |
+| $1,000 | 32,000 | 20,000 | 12,000 | 32× |
+| $2,500 | 85,000 | 50,000 | 35,000 | 34× |
+| $5,000 | 180,000 | 100,000 | 80,000 | 36× |
+| $10,000 | 380,000 | 200,000 | 180,000 | 38× |
+| $25,000 | 1,000,000 | 500,000 | 500,000 | 40× |
+
+Live source of truth: `GET /api/v1/stats/power` — response includes:
+- `packages`: this table, computed at runtime.
+- `min_package_usd`: the enforced API minimum ($100).
+- `founder_tier_bonuses`: legacy alias for `packages[*].bonus_power` (kept for backward compatibility).
+
+The bonus portion is not gated on any cap — every tier purchase always receives its full package POWER.
 
 ---
 
@@ -280,7 +304,7 @@ Use this to pre-display the SOL cost before the user commits. The gas buffer is 
 | Status | Body | Frontend action |
 |---|---|---|
 | 200 | — | Send `sol_expected` SOL to `purchase_wallet` |
-| 400 | `xfee_amount must be positive` | Validation |
+| 400 | `xfee_amount must be positive` / `Minimum purchase is $100` | Validation |
 | 404 | `User not registered` | Send user to registration first |
 | 409 | `You already have an active pending purchase…` | The user has an unfinished purchase; surface its `purchase_id` (fetch `/user/{wallet}/purchases?page=1&limit=1`) and let them either complete it or wait 15 min for expiry |
 | 503 | `No purchase wallets available, try again shortly` | Backend pool is replenishing; auto-retry in 3–5s |
